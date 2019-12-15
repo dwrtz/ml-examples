@@ -130,8 +130,3 @@ if __name__ == '__main__':
     ax2.grid(True)
     
     plt.show()
-
-    # plt.plot(x)
-    # plt.plot(z)
-    # plt.plot(y)
-    # plt.show()
