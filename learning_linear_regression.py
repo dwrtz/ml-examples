@@ -91,7 +91,16 @@ def encoder(inputs, initial_states, params):
         initializer=initial_states
     )
 
-    return result
+    # construct variational posterior from shaping parameters in result
+    qz = tfd.Independent(
+        distribution=tfd.MultivariateNormalTriL(
+            loc=result.h_mu,
+            scale_tril=tfp.math.fill_triangular(result.h_L)
+        ),
+        reinterpreted_batch_ndims=1
+    )
+
+    return qz
 
 
 if __name__ == '__main__':
@@ -137,6 +146,8 @@ if __name__ == '__main__':
     initial_states = EncoderStates(h_mu=h_mu, h_L=h_L)
     params = EncoderParams(W1=W1, b1=b1, W2=W2)
 
-    outputs = encoder(inputs, initial_states, params)
+    qz = encoder(inputs, initial_states, params)
+
+    
 
     print('Done!')
