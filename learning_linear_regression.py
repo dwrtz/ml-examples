@@ -78,7 +78,7 @@ def encoder(inputs, initial_states, params):
             axis=-1
         )
 
-        a = tf.nn.relu(tf.tensordot(params.W1, u, axes=1) + params.b1)
+        a = tf.nn.tanh(tf.tensordot(params.W1, u, axes=1) + params.b1)
         h = tf.tensordot(params.W2, a, axes=1)
 
         next_states = EncoderStates(h_mu=h[0:2], h_L=h[2:])
@@ -125,13 +125,13 @@ if __name__ == '__main__':
     h_mu = tf.ones([2])
     h_L = tf.boolean_mask(tf.eye(2), triL_mask)
 
-    num_in = 7
+    num_in = 7 # x, y, h_mu (2), h_L (3)
     num_hidden = 20
-    num_out = 5
+    num_out = 5 # h_mu (2), h_L (3)
 
-    W1 = tf.Variable(tf.zeros([num_hidden, num_in]))
+    W1 = tf.Variable(tf.random.normal([num_hidden, num_in]))
     b1 = tf.Variable(tf.zeros([num_hidden]))
-    W2 = tf.Variable(tf.zeros([num_out, num_hidden]))
+    W2 = tf.Variable(tf.random.normal([num_out, num_hidden]))
 
     inputs = EncoderInputs(y=y, x=x)
     initial_states = EncoderStates(h_mu=h_mu, h_L=h_L)
