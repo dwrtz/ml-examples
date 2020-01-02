@@ -103,6 +103,54 @@ def encoder(inputs, initial_states, params):
     return qz
 
 
+DecoderParams = namedtuple(
+    'DecoderParams',
+    [
+        'R',
+        'Q',
+        'L0',
+        'mu0'
+    ]
+)
+
+def decoder(codes, inputs, params, qz):
+
+    assert(isinstance(codes, tf.Tensor))
+    assert(isinstance(inputs, EncoderInputs))
+    assert(isinstance(params, DecoderParams))
+
+    def observation_density(code, xy, R):
+        # p(y(t) | z(t), x(t)) = Normal(z(t)*x(t), R)
+
+        loc = xy[0]*code[0]
+        scale = tf.math.sqrt(R)
+        py = tfd.Normal(loc=loc, scale=scale)
+
+        return py
+
+    def transition_density(code, Q):
+        # p(z(t) | z(t-1)) = Normal(z(t-1), Q)
+
+        loc = code[1]
+        scale = tf.math.sqrt(Q)
+        pz = tfd.Normal(loc=loc, scale=scale)
+
+        return pz
+
+    def prior_density(mu, L):
+        # q(z(t-1) | y(t-1), x(t-1))
+        # the marginalized variational posterior from the previous time step
+
+        return tfd.Normal(loc=mu, scale=L) 
+
+    py = None
+    pz = None
+    qzm = None
+        
+
+    return py, pz, qzm
+
+
 if __name__ == '__main__':
 
     ''' 
@@ -131,7 +179,7 @@ if __name__ == '__main__':
 
     # encoder to estimate shaping parameters of variational posterior
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
-    h_mu = tf.ones([2])
+    h_mu = tf.zeros([2])
     h_L = tf.boolean_mask(tf.eye(2), triL_mask)
 
     num_in = 7 # x, y, h_mu (2), h_L (3)
