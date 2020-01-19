@@ -14,25 +14,31 @@ summary of leaning task:
     Learn a (possibly recurrent) neural network that computes the shaping
     parameters of the variational posterior at the current time step given... 
      - the shaping parameters at the previous time step, and
-     - the current observations y(t) and x(t)
+     - the current observations x and y
+
+notation:
+    - x, y, z is shorthand for x(t), y(t), z(t)
+    - X is shorthand for the set {x(1), x(2), ..., x(t)}, similarly for Y
+    - x', y', z', is shorthand for x(t-1), y(t-1), z(t-1)
+    - X' is shorthand for the set {x(1), x(2), ..., x(t-1)}, similarly for Y'
 
 observation model:
-    p(y(t) | z(t), x(t)) = Normal(z(t)*x(t), R)
+    p(y | z, x) = Normal(z*x, R)
 
 dynamic model:
-    p(z(t) | z(t-1)) = Normal(z(t-1), Q)
+    p(z | z') = Normal(z', Q)
 
 joint:
-    p(y(t), z(t), z(t-1) | x(t))
-        = p(y(t) | z(t), x(t)) * p(z(t) | z(t-1)) * q(z(t-1) | y(t-1), x(t-1))
+    p(y, z, z' | Y', X)
+        = p(y | z, x) * p(z | z') * q(z' | Y', X')
 
 variational posterior:
-    q(z(t), z(t-1) | y(t), x(t))
+    q(z, z' | Y, X)
 
 note:
     the factored joint distribution above uses the marginalized variational 
     posterior from the previous time step...
-         q(z(t-1) | y(t-1), x(t-1))
+         q(z' | Y', X')
 
 
 '''
