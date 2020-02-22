@@ -1,3 +1,4 @@
+# RESOLVED: use tfd.MultivariateNormalDiag
 import os
 import tensorflow_probability as tfp
 

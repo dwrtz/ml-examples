@@ -47,8 +47,8 @@ note:
 EncoderInputs = namedtuple(
     'EncoderInputs',
     [
-        'y',
-        'x',
+        'Y',
+        'X',
     ]
 )
 
@@ -69,32 +69,34 @@ EncoderParams = namedtuple(
     ]
 )
 
-def encoder(inputs, initial_states, params):
+def encoder(inputs, initial_state, params):
     
     assert isinstance(inputs, EncoderInputs)
     assert isinstance(initial_states, EncoderStates)
     assert isinstance(params, EncoderParams)
 
-    def encoder_inner(states, ins):
+    def encoder_inner(encoder_state, encoder_input):
+        # assume encoder_state has type EncoderStates
+        # assume encoder_input has type EncoderInputs
 
-        yx = tf.stack([ins.y, ins.x], axis=-1)
+        yx = tf.stack([encoder_input.Y, encoder_input.X], axis=-1)
 
         u = tf.concat(
-            [states.h_mu, states.h_L, yx],
+            [encoder_state.h_mu, encoder_state.h_L, yx],
             axis=-1
         )
 
         a = tf.nn.tanh(tf.tensordot(params.W1, u, axes=1) + params.b1)
         h = tf.tensordot(params.W2, a, axes=1)
 
-        next_states = EncoderStates(h_mu=h[0:2], h_L=h[2:])
+        encoder_output = EncoderStates(h_mu=h[0:2], h_L=h[2:])
 
-        return next_states
+        return encoder_output
 
     result = tf.scan(
         encoder_inner,
         inputs,
-        initializer=initial_states
+        initializer=initial_state
     )
 
     # construct variational posterior from shaping parameters in result
@@ -120,38 +122,45 @@ DecoderParams = namedtuple(
 )
 
 def decoder(codes, inputs, params, qz):
+    # codes are samples z, z' ~ q(z, z'|Y, X)
 
     assert(isinstance(codes, tf.Tensor))
     assert(isinstance(inputs, EncoderInputs))
     assert(isinstance(params, DecoderParams))
+    assert(isinstance(qz, tfp.distributions.Distribution))
 
-    def observation_density(code, xy, R):
+    def observation_density(codes, inputs, params):
         # p(y(t) | z(t), x(t)) = Normal(z(t)*x(t), R)
-
-        loc = xy[0]*code[0]
-        scale = tf.math.sqrt(R)
-        py = tfd.Normal(loc=loc, scale=scale)
+        py = tfd.Normal(loc=codes[:,0]*inputs.X, scale=tf.math.sqrt(params.R))
 
         return py
 
-    def transition_density(code, Q):
+    def transition_density(codes, params):
         # p(z(t) | z(t-1)) = Normal(z(t-1), Q)
-
-        loc = code[1]
-        scale = tf.math.sqrt(Q)
-        pz = tfd.Normal(loc=loc, scale=scale)
+        pz = tfd.Normal(loc=codes[:,1], scale=tf.math.sqrt(params.Q))
 
         return pz
 
-    def prior_density(mu, L):
+    def prior_density(params, qz):
         # q(z(t-1) | y(t-1), x(t-1))
         # the marginalized variational posterior from the previous time step
+        loc = tf.concat(
+            [tf.expand_dims(params.mu0[0], axis=0), qz.distribution.loc[0:-1,0]],
+            axis=0
+        )
 
-        return tfd.Normal(loc=mu, scale=L) 
+        scale = tf.concat(
+            [tf.expand_dims(params.L0[0,0], axis=0), qz.distribution.scale_tril[0:-1,0,0]],
+            axis=0
+        )
 
-    py = None
-    pz = None
-    qzm = None
+        qzm = tfd.Normal(loc=loc, scale=scale) 
+
+        return qzm
+
+    py = observation_density(codes, inputs, params)
+    pz = transition_density(codes, params)
+    qzm = prior_density(params, qz)
         
 
     return py, pz, qzm
@@ -184,9 +193,9 @@ if __name__ == '__main__':
     y = z*x + tf.random.normal([Npts], mean=0, stddev=tf.math.sqrt(R))
 
     # encoder to estimate shaping parameters of variational posterior
+    mu0 = tf.zeros([2])
+    L0 = tf.eye(2)
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
-    h_mu = tf.zeros([2])
-    h_L = tf.boolean_mask(tf.eye(2), triL_mask)
 
     num_in = 7 # x, y, h_mu (2), h_L (3)
     num_hidden = 20
@@ -196,12 +205,14 @@ if __name__ == '__main__':
     b1 = tf.Variable(tf.zeros([num_hidden]))
     W2 = tf.Variable(tf.random.normal([num_out, num_hidden]))
 
-    inputs = EncoderInputs(y=y, x=x)
-    initial_states = EncoderStates(h_mu=h_mu, h_L=h_L)
+    inputs = EncoderInputs(Y=y, X=x)
+    initial_states = EncoderStates(h_mu=mu0, h_L=tf.boolean_mask(L0, triL_mask))
     params = EncoderParams(W1=W1, b1=b1, W2=W2)
+    dparams = DecoderParams(R=R, Q=Q, L0=L0, mu0=mu0)
 
     qz = encoder(inputs, initial_states, params)
+    codes = qz.sample()
+    py, pz, qzm = decoder(codes, inputs, dparams, qz)
 
-    
 
     print('Done!')
