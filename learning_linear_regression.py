@@ -114,10 +114,10 @@ def encoder(inputs, initial_state, params):
 DecoderParams = namedtuple(
     'DecoderParams',
     [
-        'R',
-        'Q',
-        'L0',
-        'mu0'
+        'R',    # variance parameter of observation model
+        'Q',    # variance parameter of dynamic model
+        'L0',   # lower-tri scale matrix of variational posterior
+        'mu0'   # mean of initial variational posterior
     ]
 )
 
@@ -154,7 +154,7 @@ def decoder(codes, inputs, params, qz):
             axis=0
         )
 
-        qzm = tfd.Normal(loc=loc, scale=scale) 
+        qzm = tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale) 
 
         return qzm
 
@@ -164,6 +164,38 @@ def decoder(codes, inputs, params, qz):
         
 
     return py, pz, qzm
+
+
+def loss_func(inputs, params, qz, num_samples):
+    # approximates ELBO with monte-carlo samples from qz
+
+    assert(isinstance(inputs, EncoderInputs))
+    assert(isinstance(params, DecoderParams))
+    assert(isinstance(qz, tfp.distributions.Distribution))
+    assert(isinstance(num_samples, int))
+
+    def mc_log_joint(inputs, params, qz):
+
+        codes = qz.sample()
+        py, pz, qzm = decoder(codes, inputs, params, qz)
+        
+        LL = py.log_prob(inputs.Y)
+        LL += pz.log_prob(codes[:,0])
+        LL += qzm.log_prob(codes[:,1])
+
+        return LL
+
+    log_probs = []
+
+    for n in range(num_samples):
+        log_probs.append(mc_log_joint(inputs, params, qz))
+
+    loss = -tf.reduce_sum(log_probs)/float(num_samples) - qz.entropy()
+
+    return loss
+
+
+        
 
 
 if __name__ == '__main__':
@@ -214,5 +246,6 @@ if __name__ == '__main__':
     codes = qz.sample()
     py, pz, qzm = decoder(codes, inputs, dparams, qz)
 
+    loss = loss_func(inputs, dparams, qz, 2)
 
     print('Done!')
