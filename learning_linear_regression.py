@@ -89,7 +89,12 @@ def encoder(inputs, initial_state, params):
         a = tf.nn.tanh(tf.tensordot(params.W1, u, axes=1) + params.b1)
         h = tf.tensordot(params.W2, a, axes=1)
 
-        encoder_output = EncoderStates(h_mu=h[0:2], h_L=h[2:])
+        hx = tf.expand_dims(h, axis=-1)
+        vlist = [tf.math.softplus(hx[2]), tf.identity(hx[3]), tf.math.softplus(hx[4])]
+
+        v = tf.concat(vlist, axis=0)
+        
+        encoder_output = EncoderStates(h_mu=h[0:2], h_L=v)
 
         return encoder_output
 
@@ -120,6 +125,7 @@ DecoderParams = namedtuple(
         'mu0'   # mean of initial variational posterior
     ]
 )
+
 
 def decoder(codes, inputs, params, qz):
     # codes are samples z, z' ~ q(z, z'|Y, X)
@@ -213,7 +219,7 @@ if __name__ == '__main__':
     R = 0.1
     z0 = 1.0
 
-    Npts = 500
+    Npts = 20
     Ncycles = 3
     phi = 2*np.pi*tf.range(Npts, dtype=tf.float32)/(Npts/Ncycles)
     x = tf.math.sin(phi)
@@ -230,7 +236,7 @@ if __name__ == '__main__':
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
 
     num_in = 7 # x, y, h_mu (2), h_L (3)
-    num_hidden = 20
+    num_hidden = 200
     num_out = 5 # h_mu (2), h_L (3)
 
     W1 = tf.Variable(tf.random.normal([num_hidden, num_in]))
@@ -242,10 +248,23 @@ if __name__ == '__main__':
     params = EncoderParams(W1=W1, b1=b1, W2=W2)
     dparams = DecoderParams(R=R, Q=Q, L0=L0, mu0=mu0)
 
-    qz = encoder(inputs, initial_states, params)
-    codes = qz.sample()
-    py, pz, qzm = decoder(codes, inputs, dparams, qz)
+    # set up training loop
+    optimizer = tf.keras.optimizers.Adam()
+    num_steps = 1000
+    train_vars = [W1, b1, W2]
+    losses = []
 
-    loss = loss_func(inputs, dparams, qz, 2)
+    for kk in range(num_steps):
+
+        with tf.GradientTape() as g:
+            g.watch(train_vars)
+            qz = encoder(inputs, initial_states, params)
+            loss = loss_func(inputs, dparams, qz, 1)
+            grads = g.gradient(loss, train_vars)
+
+        print('iter: {}, loss: {}'.format(kk, loss))
+        losses.append(loss)
+        clipped_grads = [tf.clip_by_norm(grad, 1.0) for grad in grads]
+        optimizer.apply_gradients(zip(grads, train_vars))
 
     print('Done!')
