@@ -8,7 +8,9 @@ tfd = tfp.distributions
 
 os.environ['CUDA_VISIBLE_DEVICES']= '0'
 
-tf.random.set_seed(5678)
+seed = 5678
+tf.random.set_seed(seed)
+np.random.seed(seed)
 
 
 
@@ -234,13 +236,16 @@ def loss_func(inputs, params, h, codes, num_samples):
     return loss
     
 
-def make_fake_data(batch_size, sequence_len, num_cycles, Q, R, z0, P0):
+def make_fake_data(batch_size, sequence_len, num_cycles_min_max, Q, R, z0, P0):
 
     xlist = []
     ylist = []
     zlist = []
 
+
+
     for ii in range(batch_size):
+        num_cycles = np.random.randint(*num_cycles_min_max)
         phi = 2*np.pi*tf.range(sequence_len, dtype=tf.float32)/(sequence_len/num_cycles) + 2*tf.random.normal([1])
         x = tf.math.sin(phi)
         z = tf.scan(
@@ -281,14 +286,14 @@ if __name__ == '__main__':
     '''
 
     batch_size = 40
-    sequence_len = 200
-    num_cycles = 3
+    sequence_len = 400
+    num_cycles_min_max = [3, sequence_len//8]
     Q = 0.1
     R = 0.1
     z0 = 1.0
     P0 = 2.0
 
-    xbatch, ybatch, zbatch = make_fake_data(batch_size, sequence_len, num_cycles, Q, R, z0, P0)
+    xbatch, ybatch, zbatch = make_fake_data(batch_size, sequence_len, num_cycles_min_max, Q, R, z0, P0)
 
 
 
@@ -330,7 +335,7 @@ if __name__ == '__main__':
     optimizer = tf.keras.optimizers.Adam(1e-3)
 
     num_steps = 10000
-    num_samples = 25
+    num_samples = 50
 
     losses = []
     best_loss = 1e8
@@ -356,6 +361,8 @@ if __name__ == '__main__':
 
 
     # training loop
+    grad_min = -1.0
+    grad_max = 1.0
     for kk in range(num_steps):
 
         tt = time.time()
@@ -367,10 +374,49 @@ if __name__ == '__main__':
             best_loss = loss
 
         print('iter: {}, time: {}, loss: {}'.format(kk, dt, loss))
-        clipped_grads = [tf.clip_by_value(grad, -.001, .001) for grad in grads]
+        clipped_grads = [tf.clip_by_value(grad, grad_min, grad_max) for grad in grads]
         # clipped_grads = [tf.clip_by_norm(grad, 1.0) for grad in grads]
         optimizer.apply_gradients(zip(clipped_grads, encoder.trainable_variables))
         losses.append(loss)
+
+
+    # plotting
+    from linear_regression import KalmanFilterInputs, KalmanFilterStates, KalmanFilterParams, kalman_filter
+    def plot_batch(idx):
+        z_true = zbatch[idx,:]
+        kf_inputs = KalmanFilterInputs(y=ybatch[idx,:], x=xbatch[idx,:])
+        kf_initial_states = KalmanFilterStates(z=z0, P=P0)
+        kf_params = KalmanFilterParams(R=R, Q=Q)
+        kf_outputs = kalman_filter(kf_inputs, kf_initial_states, kf_params)
+
+        kf_upper = kf_outputs.z + 2*tf.math.sqrt(kf_outputs.P)
+        kf_lower = kf_outputs.z - 2*tf.math.sqrt(kf_outputs.P)
+
+
+        h_mu = h[idx, :, 0:2]
+        h_L = h[idx, :, 2:]
+        h_tril = tfp.math.fill_triangular(h_L)
+
+        net_upper = h_mu[:,0] + 2*tf.math.abs(h_tril[:,0,0])
+        net_lower = h_mu[:,0] - 2*tf.math.abs(h_tril[:,0,0])
+
+
+        # make plots
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex='all')
+        ax1.plot(xbatch[idx,:], color='blue', label='x')
+        ax1.plot(ybatch[idx,:], color='green', label='y')
+        ax1.legend()
+        ax1.set_title('observations')
+        ax1.grid(True)
+
+        ax2.fill_between(np.arange(sequence_len), kf_upper, kf_lower, where=(kf_upper > kf_lower), alpha=0.3, color='red')
+        ax2.plot(kf_outputs.z, color='red', label='kf z est.')
+        ax2.plot(z_true, dashes=[1, 1], color='black', label='z true')
+        ax2.fill_between(np.arange(sequence_len), net_upper, net_lower, where=(net_upper > net_lower), alpha=0.3, color='blue')
+        ax2.plot(h_mu[:,0], color='blue', label='net z est.')
+        ax2.legend()
+        ax2.set_title('true and est. z with +/- 2-sigma interval')
+        ax2.grid(True)
 
 
     print('Done!')
