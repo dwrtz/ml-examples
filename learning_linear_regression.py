@@ -98,13 +98,13 @@ def make_encoder(batch_size, sequence_len, hidden_dim=16):
         )
     )
 
-    # add first output layer
-    layers.append(
-        tf.keras.layers.Dense(
-            units=hidden_dim,
-            activation=tf.nn.tanh
-        )
-    )
+    # # add first output layer
+    # layers.append(
+    #     tf.keras.layers.Dense(
+    #         units=hidden_dim,
+    #         activation=tf.nn.tanh
+    #     )
+    # )
 
     # add linear output layer
     layers.append(
@@ -297,7 +297,7 @@ if __name__ == '__main__':
     L0 = tf.math.sqrt(P0)*tf.eye(2)
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
 
-    encoder = make_encoder(batch_size, sequence_len, hidden_dim=8)
+    encoder = make_encoder(batch_size, sequence_len, hidden_dim=24)
     run_encoder = tf.function(encoder)
 
     initial_state = tf.concat(
@@ -367,7 +367,7 @@ if __name__ == '__main__':
             best_loss = loss
 
         print('iter: {}, time: {}, loss: {}'.format(kk, dt, loss))
-        clipped_grads = [tf.clip_by_value(grad, -.0001, .0001) for grad in grads]
+        clipped_grads = [tf.clip_by_value(grad, -.001, .001) for grad in grads]
         # clipped_grads = [tf.clip_by_norm(grad, 1.0) for grad in grads]
         optimizer.apply_gradients(zip(clipped_grads, encoder.trainable_variables))
         losses.append(loss)
