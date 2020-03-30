@@ -227,6 +227,8 @@ def loss_func(inputs, params, h, codes, num_samples):
     log_probs = []
     log_probs.append(mc_log_joint(inputs, params, h, codes))
 
+    qz = make_posterior(h)
+
     loss = -tf.reduce_sum(log_probs)/float(num_samples) - qz.entropy()
 
     return loss
@@ -278,8 +280,8 @@ if __name__ == '__main__':
 
     '''
 
-    batch_size = 100
-    sequence_len = 2000
+    batch_size = 10
+    sequence_len = 200
     num_cycles = 3
     Q = 0.1
     R = 0.1
@@ -332,9 +334,10 @@ if __name__ == '__main__':
     losses = []
     best_loss = 1e8
 
-    for kk in range(num_steps):
+    @tf.function
+    def train_body():
 
-        # initialize encoder states
+         # initialize encoder states
         encoder.layers[0].reset_states(states=[initial_state, initial_state])
 
         with tf.GradientTape() as g:
@@ -346,9 +349,17 @@ if __name__ == '__main__':
             codes = qz.sample(num_samples)
             loss = loss_func(inputs, decoder_params, h, codes, num_samples)
             grads = g.gradient(loss, encoder.trainable_variables)
-            if loss <= best_loss:
-                hbest = h
-                best_loss = loss
+
+        return h, loss, grads
+
+    # training loop
+    for kk in range(num_steps):
+
+        h, loss, grads = train_body()
+       
+        if loss <= best_loss:
+            hbest = h
+            best_loss = loss
 
         print('iter: {}, loss: {}'.format(kk, loss))
         losses.append(loss)
