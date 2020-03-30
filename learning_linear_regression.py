@@ -6,7 +6,10 @@ from collections import namedtuple
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 
-os.environ['CUDA_VISIBLE_DEVICES']= '-1'
+os.environ['CUDA_VISIBLE_DEVICES']= '1'
+
+tf.random.set_seed(5678)
+
 
 
 '''
@@ -69,8 +72,9 @@ EncoderParams = namedtuple(
     ]
 )
 
-def make_encoder(batch_size, sequence_len=None, hidden_dim=16):
+def make_encoder(batch_size, sequence_len, hidden_dim=16):
 
+    unroll = False
     state_dim = 5
     layers = []
 
@@ -80,7 +84,8 @@ def make_encoder(batch_size, sequence_len=None, hidden_dim=16):
             units=state_dim,
             return_sequences=True,
             stateful=True,
-            batch_input_shape=[batch_size, None, 2]
+            batch_input_shape=[batch_size, sequence_len, 2],
+            unroll=unroll
         )
     )
 
@@ -88,7 +93,16 @@ def make_encoder(batch_size, sequence_len=None, hidden_dim=16):
     layers.append(
         tf.keras.layers.LSTM(
             units=hidden_dim,
-            return_sequences=True
+            return_sequences=True,
+            unroll=unroll
+        )
+    )
+
+    # add first output layer
+    layers.append(
+        tf.keras.layers.Dense(
+            units=hidden_dim,
+            activation=tf.nn.tanh
         )
     )
 
@@ -133,42 +147,47 @@ DecoderParams = namedtuple(
 )
 
 
-def decoder(codes, inputs, params, qz):
+def decoder(codes, inputs, params, h):
     # codes are samples z, z' ~ q(z, z'|Y, X)
 
     assert(isinstance(codes, tf.Tensor))
     assert(isinstance(inputs, EncoderInputs))
     assert(isinstance(params, DecoderParams))
-    assert(isinstance(qz, tfp.distributions.Distribution))
+    assert(isinstance(h, tf.Tensor))
 
     def observation_density(codes, inputs, params):
         # p(y(t) | z(t), x(t)) = Normal(z(t)*x(t), R)
-        py = tfd.Normal(loc=codes[:,:,0:1]*inputs.X, scale=tf.math.sqrt(params.R))
+        py = tfd.Normal(loc=codes[:,:,:,0:1]*inputs.X, scale=tf.math.sqrt(params.R))
         py = tfd.Independent(py, reinterpreted_batch_ndims=3)
 
         return py
 
     def transition_density(codes, params):
         # p(z(t) | z(t-1)) = Normal(z(t-1), Q)
-        pz = tfd.Normal(loc=codes[:,:,1:2], scale=tf.math.sqrt(params.Q))
+        pz = tfd.Normal(loc=codes[:,:,:,1:2], scale=tf.math.sqrt(params.Q))
         pz = tfd.Independent(pz, reinterpreted_batch_ndims=3)
 
         return pz
 
-    def prior_density(params, qz):
+    def prior_density(params, h):
         # q(z(t-1) | y(t-1), x(t-1))
         # the marginalized variational posterior from the previous time step
         
-        mu0 = tf.reshape(params.mu0[0], [1, 1, -1])
-        L0 = tf.reshape(params.L0[0,0], [1, 1, -1])
+        batch_size = h.shape[0]
+
+        h_loc = h[:,:,0:2]
+        h_scale_tril = tfp.math.fill_triangular(h[:,:,2:])    
+
+        mu0 = params.mu0[0]*tf.ones([batch_size, 1, 1])
+        L0 = params.L0[0,0]*tf.ones([batch_size, 1, 1])
 
         loc = tf.concat(
-            [mu0, qz.distribution.loc[:,0:-1,0:1]],
+            [mu0, h_loc[:,0:-1,0:1]],
             axis=1 # concat on time axis
         )
 
         scale = tf.concat(
-            [L0, qz.distribution.scale_tril[:,0:-1,0:1,0]],
+            [L0, h_scale_tril[:,0:-1,0:1,0]],
             axis=1 # concat on time axis
         )
 
@@ -179,39 +198,73 @@ def decoder(codes, inputs, params, qz):
 
     py = observation_density(codes, inputs, params)
     pz = transition_density(codes, params)
-    qzm = prior_density(params, qz)
+    qzm = prior_density(params, h)
         
 
     return py, pz, qzm
 
-
-def loss_func(inputs, params, qz, codes):
+@tf.function()
+def loss_func(inputs, params, h, codes, num_samples):
     # approximates ELBO with monte-carlo samples from qz
 
     assert(isinstance(inputs, EncoderInputs))
     assert(isinstance(params, DecoderParams))
-    assert(isinstance(qz, tfp.distributions.Distribution))
+    assert(isinstance(h, tf.Tensor))
     assert(isinstance(codes, tf.Tensor))
 
-    def mc_log_joint(inputs, params, qz, codes):
+    def mc_log_joint(inputs, params, h, codes):
 
-        py, pz, qzm = decoder(codes, inputs, params, qz)
+        py, pz, qzm = decoder(codes, inputs, params, h)
         
         L1 = py.log_prob(inputs.Y)
-        L2 = pz.log_prob(codes[:,:,0:1])
-        L3 = qzm.log_prob(codes[:,:,1:2])
+        L2 = pz.log_prob(codes[:,:,:,0:1])
+        L3 = qzm.log_prob(codes[:,:,:,1:2])
 
         LL = L1 + L2 + L3
 
         return LL
 
     log_probs = []
-    log_probs.append(mc_log_joint(inputs, params, qz, codes))
+    log_probs.append(mc_log_joint(inputs, params, h, codes))
 
-    loss = -tf.reduce_sum(log_probs) - qz.entropy()
+    loss = -tf.reduce_sum(log_probs)/float(num_samples) - qz.entropy()
 
     return loss
     
+
+def make_fake_data(batch_size, sequence_len, num_cycles, Q, R, z0, P0):
+
+    xlist = []
+    ylist = []
+    zlist = []
+
+    for ii in range(batch_size):
+        phi = 2*np.pi*tf.range(sequence_len, dtype=tf.float32)/(sequence_len/num_cycles) + 2*tf.random.normal([1])
+        x = tf.math.sin(phi)
+        z = tf.scan(
+            lambda acc, a: acc + a,
+            tf.random.normal([sequence_len], mean=0, stddev=tf.math.sqrt(Q)),
+            initializer=z0+tf.math.sqrt(P0)*tf.random.normal([])
+        )
+        y = z*x + tf.random.normal([sequence_len], mean=0, stddev=tf.math.sqrt(R))
+
+        # expand batch dim
+        x = tf.expand_dims(x, axis=0)
+        y = tf.expand_dims(y, axis=0)
+        z = tf.expand_dims(z, axis=0)
+
+        xlist.append(x)
+        ylist.append(y)
+        zlist.append(z)
+
+    xbatch = tf.concat(xlist, axis=0)
+    ybatch = tf.concat(ylist, axis=0)
+    zbatch = tf.concat(zlist, axis=0)
+
+    return xbatch, ybatch, zbatch
+
+    
+
 
 if __name__ == '__main__':
 
@@ -224,32 +277,25 @@ if __name__ == '__main__':
     y(t) = z(t)*x(t) + v(t), v(t) ~ Normal(0, R)
 
     '''
+
+    batch_size = 100
+    sequence_len = 2000
+    num_cycles = 3
     Q = 0.1
     R = 0.1
     z0 = 1.0
+    P0 = 2.0
 
-    batch_size = 1
-    sequence_len = 5
-    num_cycles = 3
-    phi = 2*np.pi*tf.range(sequence_len, dtype=tf.float32)/(sequence_len/num_cycles)
-    x = tf.math.sin(phi)
-    z = tf.scan(
-        lambda acc, a: acc + a,
-        tf.random.normal([sequence_len], mean=0, stddev=tf.math.sqrt(Q)),
-        initializer=z0
-    )
-    y = z*x + tf.random.normal([sequence_len], mean=0, stddev=tf.math.sqrt(R))
+    xbatch, ybatch, zbatch = make_fake_data(batch_size, sequence_len, num_cycles, Q, R, z0, P0)
 
-    # add batch dim to inputs
-    x = tf.expand_dims(x, axis=0)
-    y = tf.expand_dims(y, axis=0)
+
 
     # encoder to estimate shaping parameters of variational posterior
-    mu0 = tf.zeros([2])
-    L0 = tf.eye(2)
+    mu0 = tf.zeros([2]) + z0
+    L0 = tf.math.sqrt(P0)*tf.eye(2)
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
 
-    encoder = make_encoder(batch_size, hidden_dim=16)
+    encoder = make_encoder(batch_size, sequence_len, hidden_dim=64)
     run_encoder = tf.function(encoder)
 
     initial_state = tf.concat(
@@ -259,18 +305,19 @@ if __name__ == '__main__':
         ],
         axis=-1
     )
+    initial_state = tf.ones([batch_size, 1])*initial_state
 
     stacked_encoder_input = tf.concat(
         [
-            tf.expand_dims(y, axis=-1),
-            tf.expand_dims(x, axis=-1)
+            tf.expand_dims(ybatch, axis=-1),
+            tf.expand_dims(xbatch, axis=-1)
         ],
         axis=-1
     )
 
     inputs = EncoderInputs(
-        Y=tf.expand_dims(y, axis=-1),
-        X=tf.expand_dims(x, axis=-1)
+        Y=tf.expand_dims(ybatch, axis=-1),
+        X=tf.expand_dims(xbatch, axis=-1)
     )
     
     decoder_params = DecoderParams(R=R, Q=Q, L0=L0, mu0=mu0)
@@ -278,10 +325,12 @@ if __name__ == '__main__':
 
 
     # set up training loop
-    optimizer = tf.keras.optimizers.Adam()
-    num_steps = 1000
+    optimizer = tf.keras.optimizers.Nadam()
+    num_steps = 10000
+    num_samples = 250
 
     losses = []
+    best_loss = 1e8
 
     for kk in range(num_steps):
 
@@ -294,13 +343,16 @@ if __name__ == '__main__':
             # run encoder, sample codes
             h = run_encoder(stacked_encoder_input)
             qz = make_posterior(h)
-            codes = qz.sample()
-            loss = loss_func(inputs, decoder_params, qz, codes)
+            codes = qz.sample(num_samples)
+            loss = loss_func(inputs, decoder_params, h, codes, num_samples)
             grads = g.gradient(loss, encoder.trainable_variables)
+            if loss <= best_loss:
+                hbest = h
+                best_loss = loss
 
         print('iter: {}, loss: {}'.format(kk, loss))
         losses.append(loss)
-        # clipped_grads = [tf.clip_by_norm(grad, 1.0) for grad in grads]
-        optimizer.apply_gradients(zip(grads, encoder.trainable_variables))
+        clipped_grads = [tf.clip_by_value(grad, -.01, .01) for grad in grads]
+        optimizer.apply_gradients(zip(clipped_grads, encoder.trainable_variables))
 
     print('Done!')
