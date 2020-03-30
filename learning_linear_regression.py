@@ -1,4 +1,4 @@
-import os
+import os, time
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -6,7 +6,7 @@ from collections import namedtuple
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 
-os.environ['CUDA_VISIBLE_DEVICES']= '1'
+os.environ['CUDA_VISIBLE_DEVICES']= '0'
 
 tf.random.set_seed(5678)
 
@@ -280,7 +280,7 @@ if __name__ == '__main__':
 
     '''
 
-    batch_size = 10
+    batch_size = 40
     sequence_len = 200
     num_cycles = 3
     Q = 0.1
@@ -297,7 +297,7 @@ if __name__ == '__main__':
     L0 = tf.math.sqrt(P0)*tf.eye(2)
     triL_mask = tfp.math.fill_triangular(tf.ones([3], dtype=tf.bool))
 
-    encoder = make_encoder(batch_size, sequence_len, hidden_dim=64)
+    encoder = make_encoder(batch_size, sequence_len, hidden_dim=8)
     run_encoder = tf.function(encoder)
 
     initial_state = tf.concat(
@@ -327,12 +327,14 @@ if __name__ == '__main__':
 
 
     # set up training loop
-    optimizer = tf.keras.optimizers.Nadam()
+    optimizer = tf.keras.optimizers.Adam(1e-3)
+
     num_steps = 10000
-    num_samples = 250
+    num_samples = 25
 
     losses = []
     best_loss = 1e8
+
 
     @tf.function
     def train_body():
@@ -347,23 +349,28 @@ if __name__ == '__main__':
             h = run_encoder(stacked_encoder_input)
             qz = make_posterior(h)
             codes = qz.sample(num_samples)
-            loss = loss_func(inputs, decoder_params, h, codes, num_samples)
+            loss = loss_func(inputs, decoder_params, h, codes, num_samples)/float(batch_size*sequence_len)
             grads = g.gradient(loss, encoder.trainable_variables)
 
         return h, loss, grads
 
+
     # training loop
     for kk in range(num_steps):
 
+        tt = time.time()
         h, loss, grads = train_body()
+        dt = time.time() - tt
        
         if loss <= best_loss:
             hbest = h
             best_loss = loss
 
-        print('iter: {}, loss: {}'.format(kk, loss))
-        losses.append(loss)
-        clipped_grads = [tf.clip_by_value(grad, -.01, .01) for grad in grads]
+        print('iter: {}, time: {}, loss: {}'.format(kk, dt, loss))
+        clipped_grads = [tf.clip_by_value(grad, -.0001, .0001) for grad in grads]
+        # clipped_grads = [tf.clip_by_norm(grad, 1.0) for grad in grads]
         optimizer.apply_gradients(zip(clipped_grads, encoder.trainable_variables))
+        losses.append(loss)
+
 
     print('Done!')
