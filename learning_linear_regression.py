@@ -83,22 +83,22 @@ def make_encoder(batch_size, sequence_len, hidden_dim=16):
     # add input lstm layer
     layers.append(
         tf.keras.layers.LSTM(
-            units=state_dim,
+            units=hidden_dim,
             return_sequences=True,
-            stateful=True,
+            stateful=False,
             batch_input_shape=[batch_size, sequence_len, 2],
             unroll=unroll
         )
     )
 
-    # add second lstm layer
-    layers.append(
-        tf.keras.layers.LSTM(
-            units=hidden_dim,
-            return_sequences=True,
-            unroll=unroll
-        )
-    )
+    # # add second lstm layer
+    # layers.append(
+    #     tf.keras.layers.LSTM(
+    #         units=hidden_dim,
+    #         return_sequences=True,
+    #         unroll=unroll
+    #     )
+    # )
 
     # # add first output layer
     # layers.append(
@@ -286,7 +286,7 @@ if __name__ == '__main__':
     '''
 
     batch_size = 40
-    sequence_len = 400
+    sequence_len = 200
     num_cycles_min_max = [3, sequence_len//8]
     Q = 0.1
     R = 0.1
@@ -344,8 +344,8 @@ if __name__ == '__main__':
     @tf.function
     def train_body():
 
-         # initialize encoder states
-        encoder.layers[0].reset_states(states=[initial_state, initial_state])
+        # initialize encoder states
+        # encoder.layers[0].reset_states(states=[initial_state, initial_state])
 
         with tf.GradientTape() as g:
             g.watch(encoder.trainable_variables)
@@ -361,8 +361,8 @@ if __name__ == '__main__':
 
 
     # training loop
-    grad_min = -1.0
-    grad_max = 1.0
+    grad_min = -.001
+    grad_max = .001
     for kk in range(num_steps):
 
         tt = time.time()
