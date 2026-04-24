@@ -43,6 +43,7 @@ def main() -> None:
     training_config = config["training"]
     evaluation_config = config.get("evaluation", {})
     min_var = float(training_config.get("min_var", 1e-6))
+    edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
     objective = config["model"]
 
     train_batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
@@ -76,6 +77,8 @@ def main() -> None:
             key,
             num_samples=int(training_config.get("num_elbo_samples", 8)),
             min_var=min_var,
+            oracle=train_oracle,
+            edge_kl_weight=edge_kl_weight,
         )
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -142,6 +145,7 @@ def main() -> None:
         "eval_seed_start": eval_seed_start,
         "time_steps": data_config.time_steps,
         "training_steps": int(training_config["steps"]),
+        "edge_kl_weight": edge_kl_weight,
         "final_loss": final_loss,
         "final_edge_kl": float(jnp.mean(edge_kl_bt)),
         "filter_kl": filter_kl,

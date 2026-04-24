@@ -13,6 +13,7 @@ import jax.numpy as jnp  # noqa: E402
 from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
 from vbf.kalman import EdgeOracleOutputs  # noqa: E402
 from vbf.models.cells import (  # noqa: E402
+    StructuredMLPOutputs,
     edge_mean_cov_from_outputs,
     run_structured_mlp_filter,
     run_structured_mlp_teacher_forced,
@@ -68,6 +69,8 @@ def edge_elbo_loss(
     *,
     num_samples: int = 8,
     min_var: float = 1e-6,
+    oracle: EdgeOracleOutputs | None = None,
+    edge_kl_weight: float = 0.0,
 ) -> jax.Array:
     """Negative mean local edge ELBO using reparameterized samples.
 
@@ -75,15 +78,23 @@ def edge_elbo_loss(
     in the ELBO is the model's own carried belief rather than an oracle target.
     """
 
-    terms = edge_elbo_terms(
-        mlp_params,
+    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    terms = edge_elbo_terms_from_outputs(
+        outputs,
         batch,
         state_params,
         key,
         num_samples=num_samples,
-        min_var=min_var,
     )
-    return -jnp.mean(terms.elbo)
+    loss = -jnp.mean(terms.elbo)
+    if edge_kl_weight == 0.0:
+        return loss
+    if oracle is None:
+        raise ValueError("oracle is required when edge_kl_weight is nonzero")
+    pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
+    return loss + edge_kl_weight * jnp.mean(
+        gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
+    )
 
 
 def edge_elbo_terms(
@@ -98,6 +109,25 @@ def edge_elbo_terms(
     """Return sample-averaged local edge ELBO terms for diagnostics."""
 
     outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    return edge_elbo_terms_from_outputs(
+        outputs,
+        batch,
+        state_params,
+        key,
+        num_samples=num_samples,
+    )
+
+
+def edge_elbo_terms_from_outputs(
+    outputs: StructuredMLPOutputs,
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    num_samples: int = 8,
+) -> EdgeElboTerms:
+    """Return local edge ELBO terms from structured MLP outputs."""
+
     prev_filter_mean, prev_filter_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
     return edge_elbo_terms_from_factors(
         batch,
