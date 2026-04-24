@@ -71,6 +71,7 @@ def edge_elbo_loss(
     min_var: float = 1e-6,
     oracle: EdgeOracleOutputs | None = None,
     edge_kl_weight: float = 0.0,
+    transition_consistency_weight: float = 0.0,
 ) -> jax.Array:
     """Negative mean local edge ELBO using reparameterized samples.
 
@@ -87,14 +88,34 @@ def edge_elbo_loss(
         num_samples=num_samples,
     )
     loss = -jnp.mean(terms.elbo)
-    if edge_kl_weight == 0.0:
-        return loss
-    if oracle is None:
-        raise ValueError("oracle is required when edge_kl_weight is nonzero")
-    pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
-    return loss + edge_kl_weight * jnp.mean(
-        gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
-    )
+    if edge_kl_weight != 0.0:
+        if oracle is None:
+            raise ValueError("oracle is required when edge_kl_weight is nonzero")
+        pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
+        loss = loss + edge_kl_weight * jnp.mean(
+            gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
+        )
+    if transition_consistency_weight != 0.0:
+        loss = loss + transition_consistency_weight * transition_consistency_penalty(
+            outputs,
+            state_params,
+        )
+    return loss
+
+
+def transition_consistency_penalty(
+    outputs: StructuredMLPOutputs,
+    state_params: LinearGaussianParams,
+) -> jax.Array:
+    """Moment penalty encouraging edge residuals to match transition noise."""
+
+    residual_mean = (1.0 - outputs.backward_a) * outputs.filter_mean - outputs.backward_b
+    residual_var = (1.0 - outputs.backward_a) ** 2 * outputs.filter_var + outputs.backward_var
+    q = jnp.asarray(state_params.q, dtype=outputs.filter_mean.dtype)
+    mean_penalty = residual_mean**2 / q
+    second_moment = residual_var + residual_mean**2
+    scale_penalty = (second_moment / q - 1.0) ** 2
+    return jnp.mean(mean_penalty + scale_penalty)
 
 
 def edge_elbo_terms(

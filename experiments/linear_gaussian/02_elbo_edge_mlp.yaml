@@ -28,5 +28,6 @@ training:
   hidden_dim: 32
   num_elbo_samples: 32
   edge_kl_weight: 0.0
+  transition_consistency_weight: 0.0
   log_every: 100
   min_var: 0.000001

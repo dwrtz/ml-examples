@@ -44,6 +44,7 @@ def main() -> None:
     evaluation_config = config.get("evaluation", {})
     min_var = float(training_config.get("min_var", 1e-6))
     edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
+    transition_consistency_weight = float(training_config.get("transition_consistency_weight", 0.0))
     objective = config["model"]
 
     train_batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
@@ -79,6 +80,7 @@ def main() -> None:
             min_var=min_var,
             oracle=train_oracle,
             edge_kl_weight=edge_kl_weight,
+            transition_consistency_weight=transition_consistency_weight,
         )
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -146,6 +148,7 @@ def main() -> None:
         "time_steps": data_config.time_steps,
         "training_steps": int(training_config["steps"]),
         "edge_kl_weight": edge_kl_weight,
+        "transition_consistency_weight": transition_consistency_weight,
         "final_loss": final_loss,
         "final_edge_kl": float(jnp.mean(edge_kl_bt)),
         "filter_kl": filter_kl,

@@ -14,8 +14,10 @@ ELBO_ABLATION_SAMPLES ?= 1,4,8,16,32
 ELBO_ABLATION_STEPS ?= 250,1000
 EDGE_REGULARIZER_DIR ?= outputs/linear_gaussian_edge_regularizer
 EDGE_REGULARIZER_WEIGHTS ?= 0,0.01,0.05,0.1
+TRANSITION_CONSISTENCY_DIR ?= outputs/linear_gaussian_transition_consistency
+TRANSITION_CONSISTENCY_WEIGHTS ?= 0,0.01,0.05,0.1
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -34,6 +36,7 @@ help:
 	@printf "  sweep-linear       Train and aggregate linear-Gaussian seed sweep\n"
 	@printf "  sweep-elbo-ablation Run ELBO MC-sample/training-budget ablation\n"
 	@printf "  sweep-edge-regularizer Run diagnostic oracle edge-KL regularizer sweep\n"
+	@printf "  sweep-transition-consistency Run unsupervised transition regularizer sweep\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -81,6 +84,9 @@ sweep-elbo-ablation:
 
 sweep-edge-regularizer:
 	$(UV) run python scripts/sweep_edge_regularizer.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(EDGE_REGULARIZER_WEIGHTS) --output-dir $(EDGE_REGULARIZER_DIR)
+
+sweep-transition-consistency:
+	$(UV) run python scripts/sweep_transition_consistency.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(TRANSITION_CONSISTENCY_WEIGHTS) --output-dir $(TRANSITION_CONSISTENCY_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
