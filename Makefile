@@ -3,7 +3,7 @@ UV ?= uv
 TRAIN_LINEAR_CONFIG ?= experiments/linear_gaussian/01_supervised_edge_mlp.yaml
 EVALUATE_LINEAR_CONFIG ?= experiments/linear_gaussian/00_oracle_check.yaml
 NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
-RUN_DIR ?= outputs/latest
+RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 
 .PHONY: help setup lock test lint format check train-linear evaluate-linear plot-linear train-nonlinear evaluate-nonlinear clean
 

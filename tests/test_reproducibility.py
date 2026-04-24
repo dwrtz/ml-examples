@@ -3,6 +3,7 @@
 import numpy as np
 
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
+from vbf.metrics import rmse_over_batch
 
 
 def test_linear_gaussian_batch_reproducible_for_seed() -> None:
@@ -26,3 +27,12 @@ def test_linear_gaussian_batch_shapes() -> None:
     assert batch.x.shape == (5, 9)
     assert batch.y.shape == (5, 9)
     assert batch.z.shape == (5, 9)
+
+
+def test_rmse_over_batch_shape() -> None:
+    pred = np.array([[1.0, 2.0], [3.0, 4.0]])
+    target = np.array([[1.0, 1.0], [1.0, 2.0]])
+
+    rmse = rmse_over_batch(pred, target)
+
+    assert rmse.shape == (2,)

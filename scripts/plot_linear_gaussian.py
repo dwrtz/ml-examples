@@ -3,15 +3,96 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+from vbf.plotting import load_linear_gaussian_diagnostics  # noqa: E402
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True)
-    parser.parse_args()
-    raise NotImplementedError("Linear-Gaussian plotting is not implemented yet.")
+    parser.add_argument("--episode", type=int, default=0)
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    diagnostics = load_linear_gaussian_diagnostics(run_dir)
+    plot_dir = run_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    episode = args.episode
+    if episode < 0 or episode >= diagnostics["z"].shape[0]:
+        raise ValueError(f"episode must be in [0, {diagnostics['z'].shape[0] - 1}]")
+
+    posterior_path = plot_dir / f"posterior_episode_{episode}.png"
+    metrics_path = plot_dir / "metrics_over_time.png"
+    _plot_posterior_episode(diagnostics, episode, posterior_path)
+    _plot_metrics_over_time(diagnostics, metrics_path)
+    print(f"Wrote {posterior_path}")
+    print(f"Wrote {metrics_path}")
+
+
+def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Path) -> None:
+    time = np.arange(data["z"].shape[1])
+    z = data["z"][episode]
+    oracle_mean = data["oracle_filter_mean"][episode]
+    oracle_std = np.sqrt(data["oracle_filter_var"][episode])
+    learned_mean = data["learned_filter_mean"][episode]
+    learned_std = np.sqrt(data["learned_filter_var"][episode])
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
+    axes[0].plot(time, data["x"][episode], label="x", color="tab:blue")
+    axes[0].plot(time, data["y"][episode], label="y", color="tab:green", alpha=0.8)
+    axes[0].set_title("Observations")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="upper right")
+
+    axes[1].plot(time, z, label="true z", color="black", linestyle=":")
+    axes[1].plot(time, oracle_mean, label="oracle", color="tab:red")
+    axes[1].fill_between(
+        time,
+        oracle_mean - 2.0 * oracle_std,
+        oracle_mean + 2.0 * oracle_std,
+        color="tab:red",
+        alpha=0.18,
+    )
+    axes[1].plot(time, learned_mean, label="learned", color="tab:purple")
+    axes[1].fill_between(
+        time,
+        learned_mean - 2.0 * learned_std,
+        learned_mean + 2.0 * learned_std,
+        color="tab:purple",
+        alpha=0.14,
+    )
+    axes[1].set_title("Filtering posterior")
+    axes[1].set_xlabel("time")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc="upper right")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _plot_metrics_over_time(data: dict[str, np.ndarray], path: Path) -> None:
+    time = np.arange(data["filter_kl_over_time"].shape[0])
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
+    axes[0].plot(time, data["edge_kl_over_time"], color="tab:orange")
+    axes[0].set_ylabel("edge KL")
+    axes[1].plot(time, data["filter_kl_over_time"], color="tab:purple")
+    axes[1].set_ylabel("filter KL")
+    axes[2].plot(time, data["state_rmse_over_time"], color="tab:blue")
+    axes[2].set_ylabel("state RMSE")
+    axes[2].set_xlabel("time")
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
     main()
-

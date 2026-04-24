@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import yaml
 
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar
-from vbf.losses import supervised_edge_kl_loss
-from vbf.metrics import scalar_gaussian_kl
+from vbf.losses import gaussian_kl, supervised_edge_kl_loss
+from vbf.metrics import mean_over_batch, rmse_over_batch, scalar_gaussian_kl
 from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
 from vbf.train import adam_update, init_adam
 
@@ -66,23 +69,55 @@ def main() -> None:
     final_loss = float(loss_fn(params))
     outputs = run_structured_mlp_filter(params, batch, state_params, min_var=min_var)
     pred_edge_mean, pred_edge_cov = edge_mean_cov_from_outputs(outputs)
-    filter_kl = float(
-        jnp.mean(
-            scalar_gaussian_kl(
-                oracle.filter_mean,
-                oracle.filter_var,
-                outputs.filter_mean,
-                outputs.filter_var,
-            )
-        )
+    filter_kl_bt = scalar_gaussian_kl(
+        oracle.filter_mean,
+        oracle.filter_var,
+        outputs.filter_mean,
+        outputs.filter_var,
     )
-    state_rmse = float(jnp.sqrt(jnp.mean((outputs.filter_mean - batch.z) ** 2)))
+    edge_kl_bt = gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_edge_mean, pred_edge_cov)
+    state_rmse_t = rmse_over_batch(outputs.filter_mean, batch.z)
+    filter_kl_t = mean_over_batch(filter_kl_bt)
+    edge_kl_t = mean_over_batch(edge_kl_bt)
+    filter_kl = float(jnp.mean(filter_kl_bt))
+    state_rmse = float(jnp.mean(state_rmse_t))
     mean_backward_var = float(jnp.mean(outputs.backward_var))
     mean_edge_var_trace = float(jnp.mean(jnp.trace(pred_edge_cov, axis1=-2, axis2=-1)))
     max_abs_edge_mean = float(jnp.max(jnp.abs(pred_edge_mean)))
 
     output_dir = Path(config.get("output_dir", "outputs/linear_gaussian_supervised_edge_mlp"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    _write_loss_history(output_dir / "loss_history.csv", history)
+    metrics = {
+        "batch_size": data_config.batch_size,
+        "time_steps": data_config.time_steps,
+        "training_steps": int(training_config["steps"]),
+        "final_edge_kl": final_loss,
+        "filter_kl": filter_kl,
+        "state_rmse": state_rmse,
+        "mean_backward_variance": mean_backward_var,
+        "mean_edge_covariance_trace": mean_edge_var_trace,
+        "max_abs_edge_mean": max_abs_edge_mean,
+    }
+    (output_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    np.savez(
+        output_dir / "diagnostics.npz",
+        x=np.asarray(batch.x),
+        y=np.asarray(batch.y),
+        z=np.asarray(batch.z),
+        oracle_filter_mean=np.asarray(oracle.filter_mean),
+        oracle_filter_var=np.asarray(oracle.filter_var),
+        learned_filter_mean=np.asarray(outputs.filter_mean),
+        learned_filter_var=np.asarray(outputs.filter_var),
+        edge_kl_over_time=np.asarray(edge_kl_t),
+        filter_kl_over_time=np.asarray(filter_kl_t),
+        state_rmse_over_time=np.asarray(state_rmse_t),
+        loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
+        loss_history_edge_kl=np.asarray([loss for _, loss in history], dtype=np.float64),
+    )
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(
         "\n".join(
@@ -107,11 +142,24 @@ def main() -> None:
                 "|---:|---:|",
                 *[f"| {step} | {loss:.6f} |" for step, loss in history],
                 "",
+                "## Artifacts",
+                "",
+                "- `loss_history.csv`",
+                "- `metrics.json`",
+                "- `diagnostics.npz`",
+                "",
             ]
         ),
         encoding="utf-8",
     )
     print(f"Wrote {summary_path}")
+
+
+def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("step", "edge_kl"))
+        writer.writerows(history)
 
 
 if __name__ == "__main__":

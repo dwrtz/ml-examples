@@ -14,3 +14,15 @@ def scalar_gaussian_kl(
     """Return `KL(N_p || N_q)` for scalar Gaussian arrays."""
 
     return 0.5 * (jnp.log(var_q / var_p) + (var_p + (mean_p - mean_q) ** 2) / var_q - 1.0)
+
+
+def mean_over_batch(value: jnp.ndarray) -> jnp.ndarray:
+    """Average a batch-major time series over the batch axis."""
+
+    return jnp.mean(value, axis=0)
+
+
+def rmse_over_batch(pred: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
+    """Return per-time RMSE for batch-major trajectories."""
+
+    return jnp.sqrt(jnp.mean((pred - target) ** 2, axis=0))
