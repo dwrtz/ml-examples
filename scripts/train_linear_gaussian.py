@@ -14,7 +14,7 @@ import yaml
 
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar
-from vbf.losses import gaussian_kl, supervised_edge_kl_loss
+from vbf.losses import edge_elbo_loss, gaussian_kl, supervised_edge_kl_loss
 from vbf.metrics import mean_over_batch, rmse_over_batch, scalar_gaussian_kl
 from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
 from vbf.train import adam_update, init_adam
@@ -28,13 +28,14 @@ def main() -> None:
     with Path(args.config).open() as stream:
         config = yaml.safe_load(stream)
 
-    if config["model"] != "supervised_edge_mlp":
+    if config["model"] not in {"supervised_edge_mlp", "elbo_edge_mlp"}:
         raise ValueError(f"Unsupported linear-Gaussian training model: {config['model']}")
 
     data_config = LinearGaussianDataConfig(**config["data"])
     state_params = LinearGaussianParams(**config["state_space"])
     training_config = config["training"]
     min_var = float(training_config.get("min_var", 1e-6))
+    objective = config["model"]
 
     batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
     oracle = kalman_edge_posterior_scalar(batch, state_params)
@@ -44,19 +45,30 @@ def main() -> None:
     )
     opt_state = init_adam(params)
 
-    def loss_fn(current_params: dict[str, jax.Array]) -> jax.Array:
-        return supervised_edge_kl_loss(
+    def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
+        if objective == "supervised_edge_mlp":
+            return supervised_edge_kl_loss(
+                current_params,
+                batch,
+                state_params,
+                oracle,
+                min_var=min_var,
+            )
+        return edge_elbo_loss(
             current_params,
             batch,
             state_params,
-            oracle,
+            key,
+            num_samples=int(training_config.get("num_elbo_samples", 8)),
             min_var=min_var,
         )
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
     history: list[tuple[int, float]] = []
+    train_key = jax.random.PRNGKey(config["seed"] + 2)
     for step in range(1, int(training_config["steps"]) + 1):
-        loss_value, grads = value_and_grad(params)
+        train_key, step_key = jax.random.split(train_key)
+        loss_value, grads = value_and_grad(params, step_key)
         params, opt_state = adam_update(
             params,
             grads,
@@ -66,7 +78,7 @@ def main() -> None:
         if step == 1 or step % int(training_config["log_every"]) == 0:
             history.append((step, float(loss_value)))
 
-    final_loss = float(loss_fn(params))
+    final_loss = float(loss_fn(params, jax.random.PRNGKey(config["seed"] + 3)))
     outputs = run_structured_mlp_filter(params, batch, state_params, min_var=min_var)
     pred_edge_mean, pred_edge_cov = edge_mean_cov_from_outputs(outputs)
     filter_kl_bt = scalar_gaussian_kl(
@@ -89,11 +101,14 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_loss_history(output_dir / "loss_history.csv", history)
     metrics = {
+        "objective": objective,
         "batch_size": data_config.batch_size,
         "time_steps": data_config.time_steps,
         "training_steps": int(training_config["steps"]),
-        "final_edge_kl": final_loss,
+        "final_loss": final_loss,
+        "final_edge_kl": float(jnp.mean(edge_kl_bt)),
         "filter_kl": filter_kl,
+        "edge_kl": float(jnp.mean(edge_kl_bt)),
         "state_rmse": state_rmse,
         "mean_backward_variance": mean_backward_var,
         "mean_edge_covariance_trace": mean_edge_var_trace,
@@ -116,7 +131,7 @@ def main() -> None:
         filter_kl_over_time=np.asarray(filter_kl_t),
         state_rmse_over_time=np.asarray(state_rmse_t),
         loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
-        loss_history_edge_kl=np.asarray([loss for _, loss in history], dtype=np.float64),
+        loss_history_loss=np.asarray([loss for _, loss in history], dtype=np.float64),
     )
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(
@@ -129,7 +144,9 @@ def main() -> None:
                 f"| batch size | {data_config.batch_size} |",
                 f"| time steps | {data_config.time_steps} |",
                 f"| training steps | {training_config['steps']} |",
-                f"| final edge KL | {final_loss:.6f} |",
+                f"| objective | {objective} |",
+                f"| final loss | {final_loss:.6f} |",
+                f"| edge KL | {float(jnp.mean(edge_kl_bt)):.6f} |",
                 f"| filter KL | {filter_kl:.6f} |",
                 f"| state RMSE | {state_rmse:.6f} |",
                 f"| mean backward variance | {mean_backward_var:.6f} |",
@@ -138,7 +155,7 @@ def main() -> None:
                 "",
                 "## Loss History",
                 "",
-                "| Step | Edge KL |",
+                "| Step | Loss |",
                 "|---:|---:|",
                 *[f"| {step} | {loss:.6f} |" for step, loss in history],
                 "",
@@ -158,7 +175,7 @@ def main() -> None:
 def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(("step", "edge_kl"))
+        writer.writerow(("step", "loss"))
         writer.writerows(history)
 
 

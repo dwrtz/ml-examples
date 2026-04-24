@@ -10,7 +10,14 @@ import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
 from vbf.kalman import EdgeOracleOutputs  # noqa: E402
-from vbf.models.cells import edge_mean_cov_from_outputs, run_structured_mlp_teacher_forced  # noqa: E402
+from vbf.models.cells import (  # noqa: E402
+    edge_mean_cov_from_outputs,
+    run_structured_mlp_filter,
+    run_structured_mlp_teacher_forced,
+)
+
+
+LOG_2PI = jnp.log(2.0 * jnp.pi)
 
 
 def supervised_edge_kl_loss(
@@ -40,6 +47,65 @@ def supervised_edge_kl_loss(
     return jnp.mean(kl)
 
 
+def edge_elbo_loss(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    num_samples: int = 8,
+    min_var: float = 1e-6,
+) -> jax.Array:
+    """Negative mean local edge ELBO using reparameterized samples.
+
+    The learned filter is rolled out strictly, so the previous filtering belief
+    in the ELBO is the model's own carried belief rather than an oracle target.
+    """
+
+    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    prev_filter_mean, prev_filter_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
+
+    eps_t_key, eps_tm1_key = jax.random.split(key)
+    sample_shape = (num_samples,) + outputs.filter_mean.shape
+    eps_t = jax.random.normal(eps_t_key, shape=sample_shape, dtype=outputs.filter_mean.dtype)
+    eps_tm1 = jax.random.normal(eps_tm1_key, shape=sample_shape, dtype=outputs.filter_mean.dtype)
+
+    filter_std = jnp.sqrt(outputs.filter_var)
+    backward_std = jnp.sqrt(outputs.backward_var)
+    z_t = outputs.filter_mean[None, ...] + filter_std[None, ...] * eps_t
+    backward_mean = outputs.backward_a[None, ...] * z_t + outputs.backward_b[None, ...]
+    z_tm1 = backward_mean + backward_std[None, ...] * eps_tm1
+
+    log_likelihood = _normal_log_prob(
+        batch.y[None, ...],
+        batch.x[None, ...] * z_t,
+        jnp.asarray(state_params.r, dtype=z_t.dtype),
+    )
+    log_transition = _normal_log_prob(
+        z_t,
+        z_tm1,
+        jnp.asarray(state_params.q, dtype=z_t.dtype),
+    )
+    log_prev_filter = _normal_log_prob(
+        z_tm1,
+        prev_filter_mean[None, ...],
+        prev_filter_var[None, ...],
+    )
+    log_current_filter = _normal_log_prob(
+        z_t,
+        outputs.filter_mean[None, ...],
+        outputs.filter_var[None, ...],
+    )
+    log_backward = _normal_log_prob(
+        z_tm1,
+        backward_mean,
+        outputs.backward_var[None, ...],
+    )
+
+    elbo = log_likelihood + log_transition + log_prev_filter - log_current_filter - log_backward
+    return -jnp.mean(elbo)
+
+
 def gaussian_kl(
     mean_p: jax.Array,
     cov_p: jax.Array,
@@ -56,3 +122,20 @@ def gaussian_kl(
     logdet_p = jnp.linalg.slogdet(cov_p)[1]
     logdet_q = jnp.linalg.slogdet(cov_q)[1]
     return 0.5 * (logdet_q - logdet_p - 2.0 + trace_term + quad_term)
+
+
+def _previous_filter_beliefs(
+    filter_mean: jax.Array,
+    filter_var: jax.Array,
+    state_params: LinearGaussianParams,
+) -> tuple[jax.Array, jax.Array]:
+    initial_mean = jnp.full((filter_mean.shape[0], 1), state_params.m0, dtype=filter_mean.dtype)
+    initial_var = jnp.full((filter_var.shape[0], 1), state_params.p0, dtype=filter_var.dtype)
+    return (
+        jnp.concatenate((initial_mean, filter_mean[:, :-1]), axis=1),
+        jnp.concatenate((initial_var, filter_var[:, :-1]), axis=1),
+    )
+
+
+def _normal_log_prob(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
+    return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
