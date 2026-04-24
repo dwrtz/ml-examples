@@ -99,16 +99,82 @@ def edge_elbo_terms(
 
     outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
     prev_filter_mean, prev_filter_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
+    return edge_elbo_terms_from_factors(
+        batch,
+        state_params,
+        key,
+        filter_mean=outputs.filter_mean,
+        filter_var=outputs.filter_var,
+        backward_a=outputs.backward_a,
+        backward_b=outputs.backward_b,
+        backward_var=outputs.backward_var,
+        prev_filter_mean=prev_filter_mean,
+        prev_filter_var=prev_filter_var,
+        num_samples=num_samples,
+    )
+
+
+def oracle_edge_elbo_terms(
+    oracle: EdgeOracleOutputs,
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    num_samples: int = 8,
+    min_var: float = 1e-9,
+) -> EdgeElboTerms:
+    """Return local edge ELBO terms under the exact Kalman edge posterior."""
+
+    edge_cov = oracle.edge_cov
+    filter_var = jnp.maximum(oracle.filter_var, min_var)
+    backward_a = edge_cov[..., 0, 1] / filter_var
+    backward_b = oracle.edge_mean[..., 1] - backward_a * oracle.filter_mean
+    backward_var = jnp.maximum(edge_cov[..., 1, 1] - edge_cov[..., 0, 1] ** 2 / filter_var, min_var)
+    prev_filter_mean, prev_filter_var = _previous_filter_beliefs(
+        oracle.filter_mean,
+        oracle.filter_var,
+        state_params,
+    )
+    return edge_elbo_terms_from_factors(
+        batch,
+        state_params,
+        key,
+        filter_mean=oracle.filter_mean,
+        filter_var=filter_var,
+        backward_a=backward_a,
+        backward_b=backward_b,
+        backward_var=backward_var,
+        prev_filter_mean=prev_filter_mean,
+        prev_filter_var=prev_filter_var,
+        num_samples=num_samples,
+    )
+
+
+def edge_elbo_terms_from_factors(
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    filter_mean: jax.Array,
+    filter_var: jax.Array,
+    backward_a: jax.Array,
+    backward_b: jax.Array,
+    backward_var: jax.Array,
+    prev_filter_mean: jax.Array,
+    prev_filter_var: jax.Array,
+    num_samples: int = 8,
+) -> EdgeElboTerms:
+    """Return local edge ELBO terms from `q^F_t q^B_t` factors."""
 
     eps_t_key, eps_tm1_key = jax.random.split(key)
-    sample_shape = (num_samples,) + outputs.filter_mean.shape
-    eps_t = jax.random.normal(eps_t_key, shape=sample_shape, dtype=outputs.filter_mean.dtype)
-    eps_tm1 = jax.random.normal(eps_tm1_key, shape=sample_shape, dtype=outputs.filter_mean.dtype)
+    sample_shape = (num_samples,) + filter_mean.shape
+    eps_t = jax.random.normal(eps_t_key, shape=sample_shape, dtype=filter_mean.dtype)
+    eps_tm1 = jax.random.normal(eps_tm1_key, shape=sample_shape, dtype=filter_mean.dtype)
 
-    filter_std = jnp.sqrt(outputs.filter_var)
-    backward_std = jnp.sqrt(outputs.backward_var)
-    z_t = outputs.filter_mean[None, ...] + filter_std[None, ...] * eps_t
-    backward_mean = outputs.backward_a[None, ...] * z_t + outputs.backward_b[None, ...]
+    filter_std = jnp.sqrt(filter_var)
+    backward_std = jnp.sqrt(backward_var)
+    z_t = filter_mean[None, ...] + filter_std[None, ...] * eps_t
+    backward_mean = backward_a[None, ...] * z_t + backward_b[None, ...]
     z_tm1 = backward_mean + backward_std[None, ...] * eps_tm1
 
     log_likelihood = _normal_log_prob(
@@ -128,13 +194,13 @@ def edge_elbo_terms(
     )
     log_current_filter = _normal_log_prob(
         z_t,
-        outputs.filter_mean[None, ...],
-        outputs.filter_var[None, ...],
+        filter_mean[None, ...],
+        filter_var[None, ...],
     )
     log_backward = _normal_log_prob(
         z_tm1,
         backward_mean,
-        outputs.backward_var[None, ...],
+        backward_var[None, ...],
     )
 
     neg_log_current_filter = -log_current_filter

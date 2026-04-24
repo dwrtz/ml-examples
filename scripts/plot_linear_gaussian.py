@@ -102,19 +102,24 @@ def _plot_elbo_terms_over_time(data: dict[str, np.ndarray], path: Path) -> None:
     time = np.arange(data["elbo_over_time"].shape[0])
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
 
-    axes[0].plot(time, data["elbo_over_time"], color="black", label="ELBO")
+    axes[0].plot(time, data["elbo_over_time"], color="black", label="learned")
+    if "oracle_elbo_over_time" in data:
+        axes[0].plot(time, data["oracle_elbo_over_time"], color="tab:red", label="oracle")
     axes[0].set_ylabel("ELBO")
     axes[0].legend(loc="best")
 
     term_specs = [
-        ("elbo_log_likelihood_over_time", "log likelihood"),
-        ("elbo_log_transition_over_time", "log transition"),
-        ("elbo_log_prev_filter_over_time", "log previous filter"),
-        ("elbo_neg_log_current_filter_over_time", "-log current filter"),
-        ("elbo_neg_log_backward_over_time", "-log backward"),
+        ("log_likelihood", "log likelihood"),
+        ("log_transition", "log transition"),
+        ("log_prev_filter", "log previous filter"),
+        ("neg_log_current_filter", "-log current filter"),
+        ("neg_log_backward", "-log backward"),
     ]
-    for key, label in term_specs:
-        axes[1].plot(time, data[key], label=label)
+    for term, label in term_specs:
+        axes[1].plot(time, data[f"elbo_{term}_over_time"], label=f"learned {label}")
+        oracle_key = f"oracle_elbo_{term}_over_time"
+        if oracle_key in data:
+            axes[1].plot(time, data[oracle_key], linestyle="--", label=f"oracle {label}")
     axes[1].set_ylabel("term value")
     axes[1].set_xlabel("time")
     axes[1].legend(loc="best", ncols=2)

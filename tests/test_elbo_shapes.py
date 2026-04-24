@@ -4,7 +4,7 @@ import jax
 
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar
-from vbf.losses import edge_elbo_loss, edge_elbo_terms, supervised_edge_kl_loss
+from vbf.losses import edge_elbo_loss, edge_elbo_terms, oracle_edge_elbo_terms, supervised_edge_kl_loss
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
     init_structured_mlp_params,
@@ -75,6 +75,31 @@ def test_edge_elbo_terms_are_batch_time_shaped() -> None:
 
     terms = edge_elbo_terms(
         mlp_params,
+        batch,
+        state_params,
+        jax.random.PRNGKey(1),
+        num_samples=4,
+    )
+
+    assert terms.log_likelihood.shape == (3, 5)
+    assert terms.log_transition.shape == (3, 5)
+    assert terms.log_prev_filter.shape == (3, 5)
+    assert terms.neg_log_current_filter.shape == (3, 5)
+    assert terms.neg_log_backward.shape == (3, 5)
+    assert terms.elbo.shape == (3, 5)
+
+
+def test_oracle_edge_elbo_terms_are_batch_time_shaped() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=17,
+    )
+    oracle = kalman_edge_posterior_scalar(batch, state_params)
+
+    terms = oracle_edge_elbo_terms(
+        oracle,
         batch,
         state_params,
         jax.random.PRNGKey(1),
