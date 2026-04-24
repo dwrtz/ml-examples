@@ -57,7 +57,7 @@ make evaluate-linear
 Train the first strict MLP filter:
 
 ```bash
-make train-linear LINEAR_CONFIG=experiments/linear_gaussian/01_supervised_edge_mlp.yaml
+make train-linear
 ```
 
 Generate evaluation plots:

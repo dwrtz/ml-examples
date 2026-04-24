@@ -1,4 +1,24 @@
 name: linear_gaussian_supervised_edge_mlp
 benchmark: linear_gaussian
 model: supervised_edge_mlp
+seed: 321
+output_dir: outputs/linear_gaussian_supervised_edge_mlp
 
+data:
+  batch_size: 128
+  time_steps: 96
+  x_pattern: sinusoidal
+  x_cycles: 3
+
+state_space:
+  q: 0.1
+  r: 0.1
+  m0: 1.0
+  p0: 10.0
+
+training:
+  steps: 250
+  learning_rate: 0.001
+  hidden_dim: 32
+  log_every: 50
+  min_var: 0.000001
