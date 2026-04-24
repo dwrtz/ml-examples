@@ -6,8 +6,9 @@ EVALUATE_LINEAR_CONFIG ?= experiments/linear_gaussian/00_oracle_check.yaml
 NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
+LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -22,6 +23,7 @@ help:
 	@printf "  evaluate-linear    Run linear-Gaussian evaluation\n"
 	@printf "  plot-linear        Plot linear-Gaussian results\n"
 	@printf "  plot-linear-elbo   Plot ELBO linear-Gaussian results\n"
+	@printf "  compare-linear     Compare supervised and ELBO linear-Gaussian runs\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -57,6 +59,9 @@ plot-linear:
 
 plot-linear-elbo:
 	$(UV) run python scripts/plot_linear_gaussian.py --run-dir $(RUN_DIR_ELBO)
+
+compare-linear:
+	$(UV) run python scripts/compare_linear_gaussian.py --supervised-run-dir $(RUN_DIR) --elbo-run-dir $(RUN_DIR_ELBO) --output $(LINEAR_COMPARISON)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
