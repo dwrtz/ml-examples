@@ -38,13 +38,11 @@ outputs/      Local experiment outputs, ignored by git except .gitkeep
 
 ## Quickstart
 
-Create an environment and install the package in editable mode:
+Install `uv`, then create or update the project environment:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev]"
-pytest
+uv sync --dev
+make test
 ```
 
 ## Planned Commands
@@ -52,19 +50,19 @@ pytest
 Run the linear-Gaussian oracle check:
 
 ```bash
-python scripts/evaluate_linear_gaussian.py --config experiments/linear_gaussian/00_oracle_check.yaml
+make evaluate-linear
 ```
 
 Train the first strict MLP filter:
 
 ```bash
-python scripts/train_linear_gaussian.py --config experiments/linear_gaussian/01_supervised_edge_mlp.yaml
+make train-linear LINEAR_CONFIG=experiments/linear_gaussian/01_supervised_edge_mlp.yaml
 ```
 
 Generate evaluation plots:
 
 ```bash
-python scripts/plot_linear_gaussian.py --run-dir outputs/<run-name>
+make plot-linear RUN_DIR=outputs/<run-name>
 ```
 
 These entry points are scaffolded as part of the repository reorganization. The
@@ -77,4 +75,3 @@ models should be filled in.
 The original TensorFlow and TensorFlow Probability scripts are preserved in
 `archive/2020_variational_filtering_original/`. They remain useful for comparing
 the modern implementation against the 2020-era dynamic regression experiment.
-

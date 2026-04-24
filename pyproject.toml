@@ -19,7 +19,7 @@ dependencies = [
   "tqdm",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "pytest",
   "ruff",
@@ -35,4 +35,4 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 src = ["src", "scripts", "tests"]
-
+extend-exclude = ["archive"]
