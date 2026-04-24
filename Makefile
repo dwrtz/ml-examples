@@ -7,8 +7,10 @@ NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
+LINEAR_SWEEP_DIR ?= outputs/linear_gaussian_sweep
+LINEAR_SWEEP_SEEDS ?= 321,322,323,324,325
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -24,6 +26,7 @@ help:
 	@printf "  plot-linear        Plot linear-Gaussian results\n"
 	@printf "  plot-linear-elbo   Plot ELBO linear-Gaussian results\n"
 	@printf "  compare-linear     Compare supervised and ELBO linear-Gaussian runs\n"
+	@printf "  sweep-linear       Train and aggregate linear-Gaussian seed sweep\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -62,6 +65,9 @@ plot-linear-elbo:
 
 compare-linear:
 	$(UV) run python scripts/compare_linear_gaussian.py --supervised-run-dir $(RUN_DIR) --elbo-run-dir $(RUN_DIR_ELBO) --output $(LINEAR_COMPARISON)
+
+sweep-linear:
+	$(UV) run python scripts/sweep_linear_gaussian.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(LINEAR_SWEEP_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
