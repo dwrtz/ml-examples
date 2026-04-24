@@ -53,6 +53,27 @@ def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Pat
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
     axes[0].plot(time, data["x"][episode], label="x", color="tab:blue")
     axes[0].plot(time, data["y"][episode], label="y", color="tab:green", alpha=0.8)
+    if "learned_predictive_mean" in data:
+        learned_pred_mean = data["learned_predictive_mean"][episode]
+        learned_pred_std = np.sqrt(data["learned_predictive_var"][episode])
+        oracle_pred_mean = data["oracle_predictive_mean"][episode]
+        oracle_pred_std = np.sqrt(data["oracle_predictive_var"][episode])
+        axes[0].plot(time, oracle_pred_mean, label="oracle pred", color="tab:red", alpha=0.8)
+        axes[0].fill_between(
+            time,
+            oracle_pred_mean - 2.0 * oracle_pred_std,
+            oracle_pred_mean + 2.0 * oracle_pred_std,
+            color="tab:red",
+            alpha=0.10,
+        )
+        axes[0].plot(time, learned_pred_mean, label="learned pred", color="tab:purple", alpha=0.8)
+        axes[0].fill_between(
+            time,
+            learned_pred_mean - 2.0 * learned_pred_std,
+            learned_pred_mean + 2.0 * learned_pred_std,
+            color="tab:purple",
+            alpha=0.08,
+        )
     axes[0].set_title("Observations")
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(loc="upper right")
@@ -84,14 +105,27 @@ def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Pat
 
 def _plot_metrics_over_time(data: dict[str, np.ndarray], path: Path) -> None:
     time = np.arange(data["filter_kl_over_time"].shape[0])
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
+    has_predictive = "predictive_nll_over_time" in data
+    num_axes = 4 if has_predictive else 3
+    fig, axes = plt.subplots(num_axes, 1, figsize=(10, 10 if has_predictive else 8), sharex=True, constrained_layout=True)
     axes[0].plot(time, data["edge_kl_over_time"], color="tab:orange")
     axes[0].set_ylabel("edge KL")
     axes[1].plot(time, data["filter_kl_over_time"], color="tab:purple")
     axes[1].set_ylabel("filter KL")
     axes[2].plot(time, data["state_rmse_over_time"], color="tab:blue")
     axes[2].set_ylabel("state RMSE")
-    axes[2].set_xlabel("time")
+    if has_predictive:
+        axes[3].plot(time, data["predictive_nll_over_time"], color="tab:green", label="learned")
+        axes[3].plot(
+            time,
+            data["oracle_predictive_nll_over_time"],
+            color="tab:red",
+            linestyle="--",
+            label="oracle",
+        )
+        axes[3].set_ylabel("pred NLL")
+        axes[3].legend(loc="best")
+    axes[-1].set_xlabel("time")
     for axis in axes:
         axis.grid(True, alpha=0.3)
     fig.savefig(path, dpi=160)

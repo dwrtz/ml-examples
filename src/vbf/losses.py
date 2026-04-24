@@ -18,6 +18,7 @@ from vbf.models.cells import (  # noqa: E402
     run_structured_mlp_filter,
     run_structured_mlp_teacher_forced,
 )
+from vbf.predictive import previous_filter_beliefs  # noqa: E402
 
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
@@ -149,7 +150,7 @@ def edge_elbo_terms_from_outputs(
 ) -> EdgeElboTerms:
     """Return local edge ELBO terms from structured MLP outputs."""
 
-    prev_filter_mean, prev_filter_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
+    prev_filter_mean, prev_filter_var = previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
     return edge_elbo_terms_from_factors(
         batch,
         state_params,
@@ -181,7 +182,7 @@ def oracle_edge_elbo_terms(
     backward_a = edge_cov[..., 0, 1] / filter_var
     backward_b = oracle.edge_mean[..., 1] - backward_a * oracle.filter_mean
     backward_var = jnp.maximum(edge_cov[..., 1, 1] - edge_cov[..., 0, 1] ** 2 / filter_var, min_var)
-    prev_filter_mean, prev_filter_var = _previous_filter_beliefs(
+    prev_filter_mean, prev_filter_var = previous_filter_beliefs(
         oracle.filter_mean,
         oracle.filter_var,
         state_params,
@@ -284,20 +285,5 @@ def gaussian_kl(
     logdet_p = jnp.linalg.slogdet(cov_p)[1]
     logdet_q = jnp.linalg.slogdet(cov_q)[1]
     return 0.5 * (logdet_q - logdet_p - 2.0 + trace_term + quad_term)
-
-
-def _previous_filter_beliefs(
-    filter_mean: jax.Array,
-    filter_var: jax.Array,
-    state_params: LinearGaussianParams,
-) -> tuple[jax.Array, jax.Array]:
-    initial_mean = jnp.full((filter_mean.shape[0], 1), state_params.m0, dtype=filter_mean.dtype)
-    initial_var = jnp.full((filter_var.shape[0], 1), state_params.p0, dtype=filter_var.dtype)
-    return (
-        jnp.concatenate((initial_mean, filter_mean[:, :-1]), axis=1),
-        jnp.concatenate((initial_var, filter_var[:, :-1]), axis=1),
-    )
-
-
 def _normal_log_prob(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)

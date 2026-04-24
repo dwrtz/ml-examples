@@ -27,6 +27,7 @@ class Row:
     edge_kl: float
     state_rmse: float
     state_nll: float
+    predictive_nll: float
 
 
 def main() -> None:
@@ -128,6 +129,7 @@ def _load_run(run_dir: Path, *, seed: int, model: str) -> Row:
         edge_kl=float(metrics["edge_kl"]),
         state_rmse=float(metrics["state_rmse"]),
         state_nll=float(np.mean(state_nll)),
+        predictive_nll=float(metrics["predictive_nll"]),
     )
 
 
@@ -143,6 +145,11 @@ def _load_oracle_reference(run_dir: Path, *, seed: int) -> Row:
             diagnostics["oracle_filter_mean"],
             diagnostics["oracle_filter_var"],
         )
+        predictive_nll = _scalar_gaussian_nll(
+            diagnostics["y"],
+            diagnostics["oracle_predictive_mean"],
+            diagnostics["oracle_predictive_var"],
+        )
 
     return Row(
         seed=seed,
@@ -152,6 +159,7 @@ def _load_oracle_reference(run_dir: Path, *, seed: int) -> Row:
         edge_kl=0.0,
         state_rmse=float(state_rmse),
         state_nll=float(np.mean(state_nll)),
+        predictive_nll=float(np.mean(predictive_nll)),
     )
 
 
@@ -171,6 +179,7 @@ def _write_csv(path: Path, rows: list[Row]) -> None:
                 "edge_kl",
                 "state_rmse",
                 "state_nll",
+                "predictive_nll",
             ],
         )
         writer.writeheader()
@@ -183,7 +192,7 @@ def _aggregate(rows: list[Row]) -> dict[str, dict[str, float | str | int]]:
     for key in sorted({row.objective for row in rows}):
         grouped = [row for row in rows if row.objective == key]
         summary[key] = {"model": grouped[0].model, "num_seeds": len(grouped)}
-        for metric in ("filter_kl", "edge_kl", "state_rmse", "state_nll"):
+        for metric in ("filter_kl", "edge_kl", "state_rmse", "state_nll", "predictive_nll"):
             values = np.asarray([getattr(row, metric) for row in grouped], dtype=np.float64)
             summary[key][f"{metric}_mean"] = float(np.mean(values))
             summary[key][f"{metric}_std"] = float(np.std(values, ddof=0))
@@ -195,15 +204,16 @@ def _render_report(rows: list[Row]) -> str:
     lines = [
         "# Linear-Gaussian Seed Sweep",
         "",
-        "| Model | Objective | Seeds | filter KL | edge KL | state RMSE | state NLL |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Model | Objective | Seeds | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for objective, metrics in summary.items():
         lines.append(
             "| {model} | {objective} | {num_seeds} | {filter_kl_mean:.6f} +/- "
             "{filter_kl_std:.6f} | {edge_kl_mean:.6f} +/- {edge_kl_std:.6f} | "
             "{state_rmse_mean:.6f} +/- {state_rmse_std:.6f} | "
-            "{state_nll_mean:.6f} +/- {state_nll_std:.6f} |".format(
+            "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
+            "{predictive_nll_mean:.6f} +/- {predictive_nll_std:.6f} |".format(
                 objective=objective,
                 **metrics,
             )
@@ -211,18 +221,17 @@ def _render_report(rows: list[Row]) -> str:
     lines.extend(
         [
             "",
-            "Predictive NLL is omitted because the predictive-head objective is not implemented yet.",
-            "",
             "## Per-Seed Rows",
             "",
-            "| Seed | Model | Objective | filter KL | edge KL | state RMSE | state NLL |",
-            "|---:|---|---|---:|---:|---:|---:|",
+            "| Seed | Model | Objective | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
+            "|---:|---|---|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
         lines.append(
             f"| {row.seed} | {row.model} | {row.objective} | {row.filter_kl:.6f} | "
-            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} |"
+            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} | "
+            f"{row.predictive_nll:.6f} |"
         )
     lines.append("")
     return "\n".join(lines)

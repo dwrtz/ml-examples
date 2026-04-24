@@ -27,6 +27,7 @@ class Row:
     edge_kl: float
     state_rmse: float
     state_nll: float
+    predictive_nll: float
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class OracleRow:
     seed: int
     state_rmse: float
     state_nll: float
+    predictive_nll: float
 
 
 def main() -> None:
@@ -177,6 +179,7 @@ def _load_run(run_dir: Path, *, seed: int, steps: int, num_samples: int) -> Row:
         edge_kl=float(metrics["edge_kl"]),
         state_rmse=float(metrics["state_rmse"]),
         state_nll=float(np.mean(state_nll)),
+        predictive_nll=float(metrics["predictive_nll"]),
     )
 
 
@@ -192,7 +195,17 @@ def _load_oracle_reference(run_dir: Path, *, seed: int) -> OracleRow:
             diagnostics["oracle_filter_mean"],
             diagnostics["oracle_filter_var"],
         )
-    return OracleRow(seed=seed, state_rmse=float(state_rmse), state_nll=float(np.mean(state_nll)))
+        predictive_nll = _scalar_gaussian_nll(
+            diagnostics["y"],
+            diagnostics["oracle_predictive_mean"],
+            diagnostics["oracle_predictive_var"],
+        )
+    return OracleRow(
+        seed=seed,
+        state_rmse=float(state_rmse),
+        state_nll=float(np.mean(state_nll)),
+        predictive_nll=float(np.mean(predictive_nll)),
+    )
 
 
 def _scalar_gaussian_nll(value: np.ndarray, mean: np.ndarray, var: np.ndarray) -> np.ndarray:
@@ -227,7 +240,7 @@ def _aggregate(rows: list[Row]) -> list[dict[str, float | int]]:
             "num_elbo_samples": num_samples,
             "num_seeds": len(grouped),
         }
-        for metric in ("filter_kl", "edge_kl", "state_rmse", "state_nll"):
+        for metric in ("filter_kl", "edge_kl", "state_rmse", "state_nll", "predictive_nll"):
             values = np.asarray([getattr(row, metric) for row in grouped], dtype=np.float64)
             item[f"{metric}_mean"] = float(np.mean(values))
             item[f"{metric}_std"] = float(np.std(values, ddof=0))
@@ -238,12 +251,15 @@ def _aggregate(rows: list[Row]) -> list[dict[str, float | int]]:
 def _aggregate_oracle(rows: list[OracleRow]) -> dict[str, float | int]:
     state_rmse = np.asarray([row.state_rmse for row in rows], dtype=np.float64)
     state_nll = np.asarray([row.state_nll for row in rows], dtype=np.float64)
+    predictive_nll = np.asarray([row.predictive_nll for row in rows], dtype=np.float64)
     return {
         "num_seeds": len(rows),
         "state_rmse_mean": float(np.mean(state_rmse)),
         "state_rmse_std": float(np.std(state_rmse, ddof=0)),
         "state_nll_mean": float(np.mean(state_nll)),
         "state_nll_std": float(np.std(state_nll, ddof=0)),
+        "predictive_nll_mean": float(np.mean(predictive_nll)),
+        "predictive_nll_std": float(np.std(predictive_nll, ddof=0)),
     }
 
 
@@ -255,38 +271,41 @@ def _render_report(
     lines = [
         "# Linear-Gaussian ELBO Ablation",
         "",
-        "| Steps | MC samples | Seeds | filter KL | edge KL | state RMSE | state NLL |",
-        "|---:|---:|---:|---:|---:|---:|---:|",
+        "| Steps | MC samples | Seeds | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in summary:
         lines.append(
             "| {steps} | {num_elbo_samples} | {num_seeds} | {filter_kl_mean:.6f} +/- "
             "{filter_kl_std:.6f} | {edge_kl_mean:.6f} +/- {edge_kl_std:.6f} | "
             "{state_rmse_mean:.6f} +/- {state_rmse_std:.6f} | "
-            "{state_nll_mean:.6f} +/- {state_nll_std:.6f} |".format(**item)
+            "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
+            "{predictive_nll_mean:.6f} +/- {predictive_nll_std:.6f} |".format(**item)
         )
     lines.extend(
         [
             "",
             "## Oracle Reference",
             "",
-            "| Model | Seeds | state RMSE | state NLL |",
-            "|---|---:|---:|---:|",
+            "| Model | Seeds | state RMSE | state NLL | pred NLL |",
+            "|---|---:|---:|---:|---:|",
             (
                 "| exact Kalman | {num_seeds} | {state_rmse_mean:.6f} +/- "
-                "{state_rmse_std:.6f} | {state_nll_mean:.6f} +/- {state_nll_std:.6f} |"
+                "{state_rmse_std:.6f} | {state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
+                "{predictive_nll_mean:.6f} +/- {predictive_nll_std:.6f} |"
             ).format(**oracle),
             "",
             "## Per-Seed Rows",
             "",
-            "| Seed | Steps | MC samples | filter KL | edge KL | state RMSE | state NLL |",
-            "|---:|---:|---:|---:|---:|---:|---:|",
+            "| Seed | Steps | MC samples | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
         lines.append(
             f"| {row.seed} | {row.steps} | {row.num_elbo_samples} | {row.filter_kl:.6f} | "
-            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} |"
+            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} | "
+            f"{row.predictive_nll:.6f} |"
         )
     lines.append("")
     return "\n".join(lines)

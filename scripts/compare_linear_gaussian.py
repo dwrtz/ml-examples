@@ -21,7 +21,7 @@ class RunSummary:
     edge_kl: float
     state_rmse: float
     state_nll: float
-    predictive_nll: float | None
+    predictive_nll: float
 
 
 def main() -> None:
@@ -73,7 +73,7 @@ def _load_run(run_dir: Path, *, label: str) -> RunSummary:
         edge_kl=float(metrics["edge_kl"]),
         state_rmse=float(metrics["state_rmse"]),
         state_nll=float(np.mean(state_nll)),
-        predictive_nll=None,
+        predictive_nll=float(metrics["predictive_nll"]),
     )
 
 
@@ -89,6 +89,11 @@ def _load_oracle_reference(run_dir: Path) -> RunSummary:
             diagnostics["oracle_filter_mean"],
             diagnostics["oracle_filter_var"],
         )
+        predictive_nll = _scalar_gaussian_nll(
+            diagnostics["y"],
+            diagnostics["oracle_predictive_mean"],
+            diagnostics["oracle_predictive_var"],
+        )
 
     return RunSummary(
         label="exact Kalman",
@@ -97,7 +102,7 @@ def _load_oracle_reference(run_dir: Path) -> RunSummary:
         edge_kl=0.0,
         state_rmse=float(state_rmse),
         state_nll=float(np.mean(state_nll)),
-        predictive_nll=None,
+        predictive_nll=float(np.mean(predictive_nll)),
     )
 
 
@@ -113,21 +118,14 @@ def _render_report(rows: list[RunSummary]) -> str:
         "|---|---|---:|---:|---:|---:|---:|",
     ]
     lines.extend(_render_row(row) for row in rows)
-    lines.extend(
-        [
-            "",
-            "Predictive NLL is `n/a` because the predictive-head objective is not implemented yet.",
-            "",
-        ]
-    )
+    lines.append("")
     return "\n".join(lines)
 
 
 def _render_row(row: RunSummary) -> str:
-    predictive_nll = "n/a" if row.predictive_nll is None else f"{row.predictive_nll:.6f}"
     return (
         f"| {row.label} | {row.objective} | {row.filter_kl:.6f} | {row.edge_kl:.6f} | "
-        f"{row.state_rmse:.6f} | {row.state_nll:.6f} | {predictive_nll} |"
+        f"{row.state_rmse:.6f} | {row.state_nll:.6f} | {row.predictive_nll:.6f} |"
     )
 
 

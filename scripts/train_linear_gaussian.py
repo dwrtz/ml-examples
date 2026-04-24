@@ -24,6 +24,7 @@ from vbf.losses import (
 )
 from vbf.metrics import mean_over_batch, rmse_over_batch, scalar_gaussian_kl
 from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
+from vbf.predictive import linear_gaussian_predictive_from_filter
 from vbf.train import adam_update, init_adam
 
 
@@ -113,6 +114,34 @@ def main() -> None:
     edge_kl_t = mean_over_batch(edge_kl_bt)
     filter_kl = float(jnp.mean(filter_kl_bt))
     state_rmse = float(jnp.mean(state_rmse_t))
+    learned_predictive = linear_gaussian_predictive_from_filter(
+        outputs.filter_mean,
+        outputs.filter_var,
+        eval_batch,
+        state_params,
+    )
+    oracle_predictive = linear_gaussian_predictive_from_filter(
+        eval_oracle.filter_mean,
+        eval_oracle.filter_var,
+        eval_batch,
+        state_params,
+    )
+    predictive_nll_bt = _scalar_gaussian_nll(
+        eval_batch.y,
+        learned_predictive.mean,
+        learned_predictive.var,
+    )
+    oracle_predictive_nll_bt = _scalar_gaussian_nll(
+        eval_batch.y,
+        oracle_predictive.mean,
+        oracle_predictive.var,
+    )
+    predictive_rmse_t = rmse_over_batch(learned_predictive.mean, eval_batch.y)
+    oracle_predictive_rmse_t = rmse_over_batch(oracle_predictive.mean, eval_batch.y)
+    predictive_nll = float(jnp.mean(predictive_nll_bt))
+    predictive_rmse = float(jnp.mean(predictive_rmse_t))
+    oracle_predictive_nll = float(jnp.mean(oracle_predictive_nll_bt))
+    oracle_predictive_rmse = float(jnp.mean(oracle_predictive_rmse_t))
     mean_backward_var = float(jnp.mean(outputs.backward_var))
     mean_edge_var_trace = float(jnp.mean(jnp.trace(pred_edge_cov, axis1=-2, axis2=-1)))
     max_abs_edge_mean = float(jnp.max(jnp.abs(pred_edge_mean)))
@@ -154,6 +183,10 @@ def main() -> None:
         "filter_kl": filter_kl,
         "edge_kl": float(jnp.mean(edge_kl_bt)),
         "state_rmse": state_rmse,
+        "predictive_nll": predictive_nll,
+        "predictive_rmse": predictive_rmse,
+        "oracle_predictive_nll": oracle_predictive_nll,
+        "oracle_predictive_rmse": oracle_predictive_rmse,
         "mean_backward_variance": mean_backward_var,
         "mean_edge_covariance_trace": mean_edge_var_trace,
         "max_abs_edge_mean": max_abs_edge_mean,
@@ -174,9 +207,17 @@ def main() -> None:
         "oracle_filter_var": np.asarray(eval_oracle.filter_var),
         "learned_filter_mean": np.asarray(outputs.filter_mean),
         "learned_filter_var": np.asarray(outputs.filter_var),
+        "learned_predictive_mean": np.asarray(learned_predictive.mean),
+        "learned_predictive_var": np.asarray(learned_predictive.var),
+        "oracle_predictive_mean": np.asarray(oracle_predictive.mean),
+        "oracle_predictive_var": np.asarray(oracle_predictive.var),
         "edge_kl_over_time": np.asarray(edge_kl_t),
         "filter_kl_over_time": np.asarray(filter_kl_t),
         "state_rmse_over_time": np.asarray(state_rmse_t),
+        "predictive_nll_over_time": np.asarray(mean_over_batch(predictive_nll_bt)),
+        "predictive_rmse_over_time": np.asarray(predictive_rmse_t),
+        "oracle_predictive_nll_over_time": np.asarray(mean_over_batch(oracle_predictive_nll_bt)),
+        "oracle_predictive_rmse_over_time": np.asarray(oracle_predictive_rmse_t),
         "loss_history_step": np.asarray([step for step, _ in history], dtype=np.int64),
         "loss_history_loss": np.asarray([loss for _, loss in history], dtype=np.float64),
     }
@@ -207,6 +248,10 @@ def main() -> None:
                 f"| edge KL | {float(jnp.mean(edge_kl_bt)):.6f} |",
                 f"| filter KL | {filter_kl:.6f} |",
                 f"| state RMSE | {state_rmse:.6f} |",
+                f"| predictive NLL | {predictive_nll:.6f} |",
+                f"| predictive RMSE | {predictive_rmse:.6f} |",
+                f"| oracle predictive NLL | {oracle_predictive_nll:.6f} |",
+                f"| oracle predictive RMSE | {oracle_predictive_rmse:.6f} |",
                 f"| mean backward variance | {mean_backward_var:.6f} |",
                 f"| mean edge covariance trace | {mean_edge_var_trace:.6f} |",
                 f"| max abs edge mean | {max_abs_edge_mean:.6f} |",
@@ -267,6 +312,10 @@ def _elbo_summary_lines(terms: EdgeElboTerms | None, *, label: str) -> list[str]
         f"| {label} negative log current filter | {metrics['term_neg_log_current_filter']:.6f} |",
         f"| {label} negative log backward | {metrics['term_neg_log_backward']:.6f} |",
     ]
+
+
+def _scalar_gaussian_nll(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
+    return 0.5 * (jnp.log(2.0 * jnp.pi) + jnp.log(var) + (value - mean) ** 2 / var)
 
 
 def _make_eval_batch(
