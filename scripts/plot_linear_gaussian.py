@@ -36,6 +36,10 @@ def main() -> None:
     _plot_metrics_over_time(diagnostics, metrics_path)
     print(f"Wrote {posterior_path}")
     print(f"Wrote {metrics_path}")
+    if "elbo_over_time" in diagnostics:
+        elbo_terms_path = plot_dir / "elbo_terms_over_time.png"
+        _plot_elbo_terms_over_time(diagnostics, elbo_terms_path)
+        print(f"Wrote {elbo_terms_path}")
 
 
 def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Path) -> None:
@@ -88,6 +92,33 @@ def _plot_metrics_over_time(data: dict[str, np.ndarray], path: Path) -> None:
     axes[2].plot(time, data["state_rmse_over_time"], color="tab:blue")
     axes[2].set_ylabel("state RMSE")
     axes[2].set_xlabel("time")
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _plot_elbo_terms_over_time(data: dict[str, np.ndarray], path: Path) -> None:
+    time = np.arange(data["elbo_over_time"].shape[0])
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
+
+    axes[0].plot(time, data["elbo_over_time"], color="black", label="ELBO")
+    axes[0].set_ylabel("ELBO")
+    axes[0].legend(loc="best")
+
+    term_specs = [
+        ("elbo_log_likelihood_over_time", "log likelihood"),
+        ("elbo_log_transition_over_time", "log transition"),
+        ("elbo_log_prev_filter_over_time", "log previous filter"),
+        ("elbo_neg_log_current_filter_over_time", "-log current filter"),
+        ("elbo_neg_log_backward_over_time", "-log backward"),
+    ]
+    for key, label in term_specs:
+        axes[1].plot(time, data[key], label=label)
+    axes[1].set_ylabel("term value")
+    axes[1].set_xlabel("time")
+    axes[1].legend(loc="best", ncols=2)
+
     for axis in axes:
         axis.grid(True, alpha=0.3)
     fig.savefig(path, dpi=160)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 
 jax.config.update("jax_enable_x64", True)
@@ -18,6 +20,17 @@ from vbf.models.cells import (  # noqa: E402
 
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
+
+
+class EdgeElboTerms(NamedTuple):
+    """Sample-averaged local edge ELBO terms with batch-time shape."""
+
+    log_likelihood: jax.Array
+    log_transition: jax.Array
+    log_prev_filter: jax.Array
+    neg_log_current_filter: jax.Array
+    neg_log_backward: jax.Array
+    elbo: jax.Array
 
 
 def supervised_edge_kl_loss(
@@ -62,6 +75,28 @@ def edge_elbo_loss(
     in the ELBO is the model's own carried belief rather than an oracle target.
     """
 
+    terms = edge_elbo_terms(
+        mlp_params,
+        batch,
+        state_params,
+        key,
+        num_samples=num_samples,
+        min_var=min_var,
+    )
+    return -jnp.mean(terms.elbo)
+
+
+def edge_elbo_terms(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    num_samples: int = 8,
+    min_var: float = 1e-6,
+) -> EdgeElboTerms:
+    """Return sample-averaged local edge ELBO terms for diagnostics."""
+
     outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
     prev_filter_mean, prev_filter_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
 
@@ -102,8 +137,18 @@ def edge_elbo_loss(
         outputs.backward_var[None, ...],
     )
 
-    elbo = log_likelihood + log_transition + log_prev_filter - log_current_filter - log_backward
-    return -jnp.mean(elbo)
+    neg_log_current_filter = -log_current_filter
+    neg_log_backward = -log_backward
+    elbo = log_likelihood + log_transition + log_prev_filter + neg_log_current_filter + neg_log_backward
+
+    return EdgeElboTerms(
+        log_likelihood=jnp.mean(log_likelihood, axis=0),
+        log_transition=jnp.mean(log_transition, axis=0),
+        log_prev_filter=jnp.mean(log_prev_filter, axis=0),
+        neg_log_current_filter=jnp.mean(neg_log_current_filter, axis=0),
+        neg_log_backward=jnp.mean(neg_log_backward, axis=0),
+        elbo=jnp.mean(elbo, axis=0),
+    )
 
 
 def gaussian_kl(
