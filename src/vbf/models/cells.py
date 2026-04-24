@@ -29,15 +29,13 @@ def init_structured_mlp_params(
 ) -> dict[str, jax.Array]:
     """Initialize a one-hidden-layer strict filtering MLP."""
 
-    key_w1, key_w2 = jax.random.split(key)
+    key_w1, _ = jax.random.split(key)
     w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
-    w2 = jax.random.normal(key_w2, shape=(hidden_dim, 5), dtype=jnp.float64)
-    w2 = w2 * jnp.sqrt(2.0 / hidden_dim)
     return {
         "w1": w1,
         "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": w2,
+        "w2": jnp.zeros((hidden_dim, 5), dtype=jnp.float64),
         "b2": jnp.zeros((5,), dtype=jnp.float64),
     }
 
@@ -78,6 +76,32 @@ def run_structured_mlp_filter(
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
+def run_structured_mlp_teacher_forced(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    target_filter_mean: jax.Array,
+    target_filter_var: jax.Array,
+    *,
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Run independent updates using target previous beliefs as inputs."""
+
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
+    prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
+    return structured_mlp_step(
+        mlp_params,
+        prev_mean,
+        prev_var,
+        batch.x,
+        batch.y,
+        state_params,
+        min_var=min_var,
+    )
+
+
 def structured_mlp_step(
     mlp_params: dict[str, jax.Array],
     prev_mean: jax.Array,
@@ -103,12 +127,21 @@ def structured_mlp_step(
     )
     hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
     raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    pred_var = prev_var + state_params.q
+    innovation = y_t - x_t * prev_mean
+    innovation_var = x_t**2 * pred_var + state_params.r
+    base_gain = pred_var * x_t / innovation_var
+    gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 0])
+    filter_mean = prev_mean + gain_scale * base_gain * innovation
+    base_filter_var = pred_var * state_params.r / innovation_var
+    filter_var = base_filter_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)) + min_var
+    backward_a = raw[..., 2]
 
     return StructuredMLPOutputs(
-        filter_mean=raw[..., 0],
-        filter_var=jax.nn.softplus(raw[..., 1]) + min_var,
-        backward_a=raw[..., 2],
-        backward_b=raw[..., 3],
+        filter_mean=filter_mean,
+        filter_var=filter_var,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * filter_mean + raw[..., 3],
         backward_var=jax.nn.softplus(raw[..., 4]) + min_var,
     )
 

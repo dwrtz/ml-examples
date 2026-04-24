@@ -5,7 +5,12 @@ import jax
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import supervised_edge_kl_loss
-from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
+from vbf.models.cells import (
+    edge_mean_cov_from_outputs,
+    init_structured_mlp_params,
+    run_structured_mlp_filter,
+    run_structured_mlp_teacher_forced,
+)
 
 
 def test_structured_mlp_edge_shapes() -> None:
@@ -37,3 +42,25 @@ def test_supervised_edge_kl_loss_is_scalar() -> None:
     loss = supervised_edge_kl_loss(mlp_params, batch, state_params, oracle)
 
     assert loss.shape == ()
+
+
+def test_structured_mlp_teacher_forced_shapes() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=14,
+    )
+    oracle = kalman_edge_posterior_scalar(batch, state_params)
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    outputs = run_structured_mlp_teacher_forced(
+        mlp_params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+    )
+
+    assert outputs.filter_mean.shape == (3, 5)
+    assert outputs.filter_var.shape == (3, 5)

@@ -10,7 +10,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
 from vbf.kalman import EdgeOracleOutputs  # noqa: E402
-from vbf.models.cells import edge_mean_cov_from_outputs, run_structured_mlp_filter  # noqa: E402
+from vbf.models.cells import edge_mean_cov_from_outputs, run_structured_mlp_teacher_forced  # noqa: E402
 
 
 def supervised_edge_kl_loss(
@@ -21,9 +21,20 @@ def supervised_edge_kl_loss(
     *,
     min_var: float = 1e-6,
 ) -> jax.Array:
-    """Mean `KL(q_oracle_edge || q_learned_edge)` over batch and time."""
+    """Mean teacher-forced `KL(q_oracle_edge || q_learned_edge)`.
 
-    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    Supervised distillation trains the local update with oracle previous
+    filtering beliefs as inputs. Self-fed rollout is kept for evaluation.
+    """
+
+    outputs = run_structured_mlp_teacher_forced(
+        mlp_params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+        min_var=min_var,
+    )
     pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
     kl = gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
     return jnp.mean(kl)
