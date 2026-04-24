@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
+from vbf.data import EpisodeBatch, LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import edge_elbo_loss, gaussian_kl, supervised_edge_kl_loss
 from vbf.metrics import mean_over_batch, rmse_over_batch, scalar_gaussian_kl
@@ -34,11 +34,19 @@ def main() -> None:
     data_config = LinearGaussianDataConfig(**config["data"])
     state_params = LinearGaussianParams(**config["state_space"])
     training_config = config["training"]
+    evaluation_config = config.get("evaluation", {})
     min_var = float(training_config.get("min_var", 1e-6))
     objective = config["model"]
 
-    batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
-    oracle = kalman_edge_posterior_scalar(batch, state_params)
+    train_batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
+    train_oracle = kalman_edge_posterior_scalar(train_batch, state_params)
+    eval_data_config = LinearGaussianDataConfig(
+        **{**config["data"], **evaluation_config.get("data", {})}
+    )
+    eval_num_batches = int(evaluation_config.get("num_batches", 1))
+    eval_seed_start = int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000))
+    eval_batch = _make_eval_batch(eval_data_config, state_params, eval_seed_start, eval_num_batches)
+    eval_oracle = kalman_edge_posterior_scalar(eval_batch, state_params)
     params = init_structured_mlp_params(
         jax.random.PRNGKey(config["seed"] + 1),
         hidden_dim=int(training_config["hidden_dim"]),
@@ -49,14 +57,14 @@ def main() -> None:
         if objective == "supervised_edge_mlp":
             return supervised_edge_kl_loss(
                 current_params,
-                batch,
+                train_batch,
                 state_params,
-                oracle,
+                train_oracle,
                 min_var=min_var,
             )
         return edge_elbo_loss(
             current_params,
-            batch,
+            train_batch,
             state_params,
             key,
             num_samples=int(training_config.get("num_elbo_samples", 8)),
@@ -79,16 +87,16 @@ def main() -> None:
             history.append((step, float(loss_value)))
 
     final_loss = float(loss_fn(params, jax.random.PRNGKey(config["seed"] + 3)))
-    outputs = run_structured_mlp_filter(params, batch, state_params, min_var=min_var)
+    outputs = run_structured_mlp_filter(params, eval_batch, state_params, min_var=min_var)
     pred_edge_mean, pred_edge_cov = edge_mean_cov_from_outputs(outputs)
     filter_kl_bt = scalar_gaussian_kl(
-        oracle.filter_mean,
-        oracle.filter_var,
+        eval_oracle.filter_mean,
+        eval_oracle.filter_var,
         outputs.filter_mean,
         outputs.filter_var,
     )
-    edge_kl_bt = gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_edge_mean, pred_edge_cov)
-    state_rmse_t = rmse_over_batch(outputs.filter_mean, batch.z)
+    edge_kl_bt = gaussian_kl(eval_oracle.edge_mean, eval_oracle.edge_cov, pred_edge_mean, pred_edge_cov)
+    state_rmse_t = rmse_over_batch(outputs.filter_mean, eval_batch.z)
     filter_kl_t = mean_over_batch(filter_kl_bt)
     edge_kl_t = mean_over_batch(edge_kl_bt)
     filter_kl = float(jnp.mean(filter_kl_bt))
@@ -102,7 +110,11 @@ def main() -> None:
     _write_loss_history(output_dir / "loss_history.csv", history)
     metrics = {
         "objective": objective,
-        "batch_size": data_config.batch_size,
+        "train_batch_size": data_config.batch_size,
+        "eval_batch_size": eval_data_config.batch_size,
+        "eval_num_batches": eval_num_batches,
+        "eval_total_batch_size": eval_batch.x.shape[0],
+        "eval_seed_start": eval_seed_start,
         "time_steps": data_config.time_steps,
         "training_steps": int(training_config["steps"]),
         "final_loss": final_loss,
@@ -120,11 +132,11 @@ def main() -> None:
     )
     np.savez(
         output_dir / "diagnostics.npz",
-        x=np.asarray(batch.x),
-        y=np.asarray(batch.y),
-        z=np.asarray(batch.z),
-        oracle_filter_mean=np.asarray(oracle.filter_mean),
-        oracle_filter_var=np.asarray(oracle.filter_var),
+        x=np.asarray(eval_batch.x),
+        y=np.asarray(eval_batch.y),
+        z=np.asarray(eval_batch.z),
+        oracle_filter_mean=np.asarray(eval_oracle.filter_mean),
+        oracle_filter_var=np.asarray(eval_oracle.filter_var),
         learned_filter_mean=np.asarray(outputs.filter_mean),
         learned_filter_var=np.asarray(outputs.filter_var),
         edge_kl_over_time=np.asarray(edge_kl_t),
@@ -141,7 +153,9 @@ def main() -> None:
                 "",
                 "| Metric | Value |",
                 "|---|---:|",
-                f"| batch size | {data_config.batch_size} |",
+                f"| train batch size | {data_config.batch_size} |",
+                f"| eval batch size | {eval_batch.x.shape[0]} |",
+                f"| eval seed start | {eval_seed_start} |",
                 f"| time steps | {data_config.time_steps} |",
                 f"| training steps | {training_config['steps']} |",
                 f"| objective | {objective} |",
@@ -170,6 +184,26 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"Wrote {summary_path}")
+
+
+def _make_eval_batch(
+    data_config: LinearGaussianDataConfig,
+    state_params: LinearGaussianParams,
+    seed_start: int,
+    num_batches: int,
+) -> EpisodeBatch:
+    if num_batches <= 0:
+        raise ValueError("evaluation.num_batches must be positive")
+
+    batches = [
+        make_linear_gaussian_batch(data_config, state_params, seed=seed_start + index)
+        for index in range(num_batches)
+    ]
+    return EpisodeBatch(
+        x=jnp.concatenate([batch.x for batch in batches], axis=0),
+        y=jnp.concatenate([batch.y for batch in batches], axis=0),
+        z=jnp.concatenate([batch.z for batch in batches], axis=0),
+    )
 
 
 def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
