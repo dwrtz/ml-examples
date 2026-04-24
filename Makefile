@@ -9,8 +9,11 @@ RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
 LINEAR_SWEEP_DIR ?= outputs/linear_gaussian_sweep
 LINEAR_SWEEP_SEEDS ?= 321,322,323,324,325
+ELBO_ABLATION_DIR ?= outputs/linear_gaussian_elbo_ablation
+ELBO_ABLATION_SAMPLES ?= 1,4,8,16,32
+ELBO_ABLATION_STEPS ?= 250,1000
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -27,6 +30,7 @@ help:
 	@printf "  plot-linear-elbo   Plot ELBO linear-Gaussian results\n"
 	@printf "  compare-linear     Compare supervised and ELBO linear-Gaussian runs\n"
 	@printf "  sweep-linear       Train and aggregate linear-Gaussian seed sweep\n"
+	@printf "  sweep-elbo-ablation Run ELBO MC-sample/training-budget ablation\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -68,6 +72,9 @@ compare-linear:
 
 sweep-linear:
 	$(UV) run python scripts/sweep_linear_gaussian.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(LINEAR_SWEEP_DIR)
+
+sweep-elbo-ablation:
+	$(UV) run python scripts/sweep_elbo_ablation.py --seeds $(LINEAR_SWEEP_SEEDS) --samples $(ELBO_ABLATION_SAMPLES) --steps $(ELBO_ABLATION_STEPS) --output-dir $(ELBO_ABLATION_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
