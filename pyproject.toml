@@ -11,11 +11,11 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
   "matplotlib",
+  "jax",
   "numpy",
   "pandas",
   "pyyaml",
   "scipy",
-  "torch",
   "tqdm",
 ]
 

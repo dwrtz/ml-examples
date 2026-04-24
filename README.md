@@ -38,7 +38,8 @@ outputs/      Local experiment outputs, ignored by git except .gitkeep
 
 ## Quickstart
 
-Install `uv`, then create or update the project environment:
+Install `uv`, then create or update the project environment. The default
+experiments use JAX and are sized to run on a laptop CPU.
 
 ```bash
 uv sync --dev

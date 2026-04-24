@@ -1,4 +1,17 @@
 name: linear_gaussian_oracle_check
 benchmark: linear_gaussian
 mode: oracle
+seed: 123
+output_dir: outputs/linear_gaussian_oracle_check
 
+data:
+  batch_size: 128
+  time_steps: 96
+  x_pattern: sinusoidal
+  x_cycles: 3
+
+model:
+  q: 0.1
+  r: 0.1
+  m0: 1.0
+  p0: 10.0
