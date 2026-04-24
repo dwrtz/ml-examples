@@ -1,0 +1,4 @@
+name: linear_gaussian_predictive_head
+benchmark: linear_gaussian
+model: predictive_head
+

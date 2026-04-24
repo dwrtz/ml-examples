@@ -1,0 +1,4 @@
+name: linear_gaussian_random_qr_generalization
+benchmark: linear_gaussian
+suite: random_qr_generalization
+

@@ -1,0 +1,4 @@
+name: linear_gaussian_elbo_edge_mlp
+benchmark: linear_gaussian
+model: elbo_edge_mlp
+

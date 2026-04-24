@@ -1,0 +1,4 @@
+name: nonlinear_student_t_observation
+benchmark: nonlinear
+observation: student_t
+

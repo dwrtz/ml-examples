@@ -1,0 +1,4 @@
+name: linear_gaussian_oracle_check
+benchmark: linear_gaussian
+mode: oracle
+

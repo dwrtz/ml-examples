@@ -1,0 +1,4 @@
+name: nonlinear_sine_observation
+benchmark: nonlinear
+observation: sine
+

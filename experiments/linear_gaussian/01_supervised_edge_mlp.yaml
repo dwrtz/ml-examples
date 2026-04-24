@@ -1,0 +1,4 @@
+name: linear_gaussian_supervised_edge_mlp
+benchmark: linear_gaussian
+model: supervised_edge_mlp
+
