@@ -424,3 +424,59 @@ the direct head gets `0.670554`, worse than the analytic predictive distribution
 from those same beliefs (`0.640331`). This supports the previous interpretation:
 in the scalar linear-Gaussian benchmark, predictive mapping is not the main
 bottleneck; belief quality and calibration are.
+
+## 13. Weak-observability suite
+
+The weak-observability suite was run in model-level chunks under:
+
+```text
+outputs/linear_gaussian_weak_observability_split/
+```
+
+Each chunk used five seeds (`321` through `325`) and 3000 training steps where
+applicable. The compared models were exact Kalman, zero-init, frozen marginal,
+self-fed supervised, calibrated self-fed supervised (`variance_ratio_weight:
+0.1`), MC ELBO, and direct closed-form ELBO.
+
+Selected 3000-step rows:
+
+| Pattern | Model | state NLL | cov 90 | var ratio | pred NLL | edge KL |
+|---|---|---:|---:|---:|---:|---:|
+| weak sinusoidal | exact Kalman | 1.175155 | 0.899137 | 1.000000 | 0.363894 | 0.000000 |
+| weak sinusoidal | frozen marginal | 1.175155 | 0.899137 | 1.000005 | 0.363894 | 0.041083 |
+| weak sinusoidal | self-fed calibrated | 1.184098 | 0.896826 | 0.999368 | 0.366838 | 0.026068 |
+| weak sinusoidal | MC ELBO | 1.291485 | 0.813155 | 0.668404 | 0.377645 | 0.166040 |
+| intermittent | exact Kalman | 0.911865 | 0.899402 | 1.000000 | 0.431967 | 0.000000 |
+| intermittent | frozen marginal | 0.911865 | 0.899402 | 1.000005 | 0.431967 | 0.014602 |
+| intermittent | self-fed calibrated | 0.912915 | 0.899064 | 1.002485 | 0.432007 | 0.015106 |
+| intermittent | MC ELBO | 0.947600 | 0.865519 | 0.892053 | 0.435886 | 0.082418 |
+| zero unobservable | exact Kalman | 2.740063 | 0.904118 | 1.000000 | 0.268452 | 0.000000 |
+| zero unobservable | frozen marginal | 2.740063 | 0.904118 | 1.000003 | 0.268452 | 0.000037 |
+| zero unobservable | self-fed calibrated | 2.742646 | 0.911780 | 1.055466 | 0.268452 | 0.002123 |
+| zero unobservable | MC ELBO | 7.010386 | 0.391683 | 0.108259 | 0.268452 | 4.948116 |
+| random normal | exact Kalman | 0.218954 | 0.897559 | 1.000000 | 0.693509 | 0.000000 |
+| random normal | frozen marginal | 0.218954 | 0.897563 | 1.000013 | 0.693509 | 0.081726 |
+| random normal | self-fed calibrated | 0.223558 | 0.896183 | 0.989436 | 0.694443 | 0.080742 |
+| random normal | MC ELBO | 0.306598 | 0.847164 | 0.776662 | 0.711019 | 0.313818 |
+
+Interpretation:
+
+- Frozen marginal remains an extremely strong control in weak-observability
+  regimes: it preserves exact Kalman filtering and learns the backward/edge
+  conditional well, especially when observations are weak or intermittent.
+- Self-fed supervised and calibrated self-fed supervised stay close to oracle
+  filtering and prediction across regimes. The calibrated variant keeps variance
+  ratio close to one except in the fully unobservable case, where it becomes
+  slightly over-dispersed but retains good coverage.
+- MC ELBO is consistently under-dispersed, and the zero-observation regime makes
+  the failure mode severe (`variance_ratio` about `0.11`, `coverage_90` about
+  `0.39`, and state NLL about `7.01`). This is now the clearest calibration
+  failure case.
+- The direct closed-form ELBO ablation remains far worse than residualized
+  structured models across weak-observability regimes. This again limits claims
+  about learning the filtering recursion from scratch.
+
+The next targeted fix should be an ELBO calibration objective that is local in
+time or observation regime. The zero-observation rows are a direct test case:
+the correct behavior is to let posterior variance grow with transition noise
+when `x_t = 0`.

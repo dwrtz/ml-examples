@@ -27,8 +27,11 @@ SELF_FED_SWEEP_DIR ?= outputs/linear_gaussian_self_fed_supervised
 SELF_FED_VARIANCE_DIR ?= outputs/linear_gaussian_self_fed_variance_regularizer
 SELF_FED_VARIANCE_WEIGHTS ?= 0,0.1,1,10
 SELF_FED_VARIANCE_STEPS ?= 3000
+WEAK_OBSERVABILITY_DIR ?= outputs/linear_gaussian_weak_observability
+WEAK_OBSERVABILITY_MODELS ?= zero,frozen,self_fed,self_fed_calibrated,elbo,direct_closed_form
+WEAK_OBSERVABILITY_STEPS ?= 3000
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -54,6 +57,7 @@ help:
 	@printf "  sweep-predictive-head Run predictive-head seed sweep\n"
 	@printf "  sweep-self-fed-supervised Run teacher-forced/self-fed/ELBO sweep\n"
 	@printf "  sweep-self-fed-variance Run self-fed variance-ratio regularizer sweep\n"
+	@printf "  sweep-weak-observability Run weak-observability linear-Gaussian suite\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -122,6 +126,9 @@ sweep-self-fed-supervised:
 
 sweep-self-fed-variance:
 	$(UV) run python scripts/sweep_self_fed_variance_regularizer.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(SELF_FED_VARIANCE_WEIGHTS) --steps $(SELF_FED_VARIANCE_STEPS) --output-dir $(SELF_FED_VARIANCE_DIR)
+
+sweep-weak-observability:
+	$(UV) run python scripts/sweep_weak_observability.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(WEAK_OBSERVABILITY_MODELS) --steps $(WEAK_OBSERVABILITY_STEPS) --output-dir $(WEAK_OBSERVABILITY_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
