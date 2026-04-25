@@ -251,6 +251,7 @@ def main() -> None:
         "eval_seed_start": eval_seed_start,
         "time_steps": data_config.time_steps,
         "training_steps": int(training_config["steps"]),
+        "num_elbo_samples": int(training_config.get("num_elbo_samples", 0)),
         "edge_kl_weight": edge_kl_weight,
         "transition_consistency_weight": transition_consistency_weight,
         "final_loss": final_loss,

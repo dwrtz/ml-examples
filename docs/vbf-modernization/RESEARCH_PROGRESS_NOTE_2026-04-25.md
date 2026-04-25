@@ -193,3 +193,48 @@ ELBO-trained filter beliefs, it is slightly worse than the analytic
 model-consistent predictive from the same learned belief. That suggests the next
 bottleneck is the learned filtering belief calibration, not a missing predictive
 mapping in the scalar linear-Gaussian case.
+
+## 7. Matched objective-budget sweep
+
+The fair supervised-vs-ELBO budget sweep has been added and run:
+
+```text
+scripts/sweep_objective_budget.py
+outputs/linear_gaussian_objective_budget/
+```
+
+The sweep compares supervised edge distillation and ELBO training at matched
+training budgets:
+
+```text
+250, 1000, 3000 steps
+```
+
+All ELBO rows use `32` Monte Carlo samples. Summary:
+
+| Objective | Steps | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ELBO | 250 | 0.189909 | 0.726516 | 0.595214 | 0.593159 | 0.821537 | 0.591008 | 0.656687 | -0.941231 |
+| ELBO | 1000 | 0.139600 | 0.416881 | 0.579526 | 0.542554 | 0.828984 | 0.615180 | 0.640331 | -0.782532 |
+| ELBO | 3000 | 0.090239 | 0.216081 | 0.558504 | 0.492098 | 0.849060 | 0.662955 | 0.622721 | -0.702407 |
+| supervised | 250 | 0.228665 | 0.449262 | 0.707524 | 0.629996 | 0.881197 | 1.929025 | 0.708275 | -1.138828 |
+| supervised | 1000 | 0.173900 | 0.287539 | 0.694481 | 0.574403 | 0.883887 | 1.769057 | 0.688892 | -0.997207 |
+| supervised | 3000 | 0.120872 | 0.212267 | 0.716988 | 0.521150 | 0.897465 | 1.949102 | 0.670420 | -1.533387 |
+
+Interpretation:
+
+- ELBO is not only winning because of the previous 1000-vs-250 step mismatch.
+  At matched budgets, ELBO is better on filter KL, global state RMSE, state NLL,
+  predictive NLL, and closed-form ELBO.
+- Supervised edge distillation catches up on edge KL by 3000 steps, but its
+  carried filtering state is still much worse for prediction.
+- Supervised remains over-dispersed (`variance_ratio` around `1.8-1.95`),
+  while ELBO remains under-dispersed but improves with budget (`0.59 -> 0.66`).
+- The 3000-step supervised closed-form ELBO is unstable across seeds, suggesting
+  teacher-forced edge matching can produce rolled-out beliefs that score poorly
+  under the sequential variational objective.
+
+Next, add a self-fed supervised objective. Current supervised training is
+teacher-forced on oracle previous filtering beliefs but evaluated by rolling out
+the model's own beliefs. A self-fed supervised variant will separate
+teacher-forcing mismatch from objective mismatch.
