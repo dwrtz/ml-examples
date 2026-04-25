@@ -16,13 +16,23 @@ from vbf.data import EpisodeBatch, LinearGaussianDataConfig, LinearGaussianParam
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import (
     EdgeElboTerms,
+    edge_elbo_closed_form_terms_from_outputs,
     edge_elbo_loss,
     edge_elbo_terms,
     gaussian_kl,
+    oracle_edge_elbo_closed_form_terms,
     oracle_edge_elbo_terms,
     supervised_edge_kl_loss,
 )
-from vbf.metrics import mean_over_batch, rmse_over_batch, scalar_gaussian_kl
+from vbf.metrics import (
+    gaussian_interval_coverage,
+    mean_over_batch,
+    rmse_global,
+    rmse_over_batch,
+    rmse_time_mean,
+    scalar_gaussian_kl,
+    scalar_gaussian_nll,
+)
 from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
 from vbf.predictive import linear_gaussian_predictive_from_filter
 from vbf.train import adam_update, init_adam
@@ -110,10 +120,22 @@ def main() -> None:
     )
     edge_kl_bt = gaussian_kl(eval_oracle.edge_mean, eval_oracle.edge_cov, pred_edge_mean, pred_edge_cov)
     state_rmse_t = rmse_over_batch(outputs.filter_mean, eval_batch.z)
+    oracle_state_rmse_t = rmse_over_batch(eval_oracle.filter_mean, eval_batch.z)
     filter_kl_t = mean_over_batch(filter_kl_bt)
     edge_kl_t = mean_over_batch(edge_kl_bt)
     filter_kl = float(jnp.mean(filter_kl_bt))
-    state_rmse = float(jnp.mean(state_rmse_t))
+    state_rmse = float(rmse_global(outputs.filter_mean, eval_batch.z))
+    state_rmse_time_mean = float(rmse_time_mean(outputs.filter_mean, eval_batch.z))
+    oracle_state_rmse = float(rmse_global(eval_oracle.filter_mean, eval_batch.z))
+    oracle_state_rmse_time_mean = float(rmse_time_mean(eval_oracle.filter_mean, eval_batch.z))
+    state_nll_bt = scalar_gaussian_nll(eval_batch.z, outputs.filter_mean, outputs.filter_var)
+    oracle_state_nll_bt = scalar_gaussian_nll(
+        eval_batch.z,
+        eval_oracle.filter_mean,
+        eval_oracle.filter_var,
+    )
+    state_nll = float(jnp.mean(state_nll_bt))
+    oracle_state_nll = float(jnp.mean(oracle_state_nll_bt))
     learned_predictive = linear_gaussian_predictive_from_filter(
         outputs.filter_mean,
         outputs.filter_var,
@@ -126,12 +148,12 @@ def main() -> None:
         eval_batch,
         state_params,
     )
-    predictive_nll_bt = _scalar_gaussian_nll(
+    predictive_nll_bt = scalar_gaussian_nll(
         eval_batch.y,
         learned_predictive.mean,
         learned_predictive.var,
     )
-    oracle_predictive_nll_bt = _scalar_gaussian_nll(
+    oracle_predictive_nll_bt = scalar_gaussian_nll(
         eval_batch.y,
         oracle_predictive.mean,
         oracle_predictive.var,
@@ -142,6 +164,21 @@ def main() -> None:
     predictive_rmse = float(jnp.mean(predictive_rmse_t))
     oracle_predictive_nll = float(jnp.mean(oracle_predictive_nll_bt))
     oracle_predictive_rmse = float(jnp.mean(oracle_predictive_rmse_t))
+    coverage_metrics = _coverage_metrics(
+        eval_batch.z,
+        outputs.filter_mean,
+        outputs.filter_var,
+        prefix="coverage",
+    )
+    oracle_coverage_metrics = _coverage_metrics(
+        eval_batch.z,
+        eval_oracle.filter_mean,
+        eval_oracle.filter_var,
+        prefix="oracle_coverage",
+    )
+    mean_filter_var = float(jnp.mean(outputs.filter_var))
+    oracle_mean_filter_var = float(jnp.mean(eval_oracle.filter_var))
+    variance_ratio = mean_filter_var / oracle_mean_filter_var
     mean_backward_var = float(jnp.mean(outputs.backward_var))
     mean_edge_var_trace = float(jnp.mean(jnp.trace(pred_edge_cov, axis1=-2, axis2=-1)))
     max_abs_edge_mean = float(jnp.max(jnp.abs(pred_edge_mean)))
@@ -163,10 +200,22 @@ def main() -> None:
             jax.random.PRNGKey(config["seed"] + 5),
             num_samples=int(training_config.get("num_elbo_samples", 8)),
         )
+    closed_form_elbo_terms = edge_elbo_closed_form_terms_from_outputs(
+        outputs,
+        eval_batch,
+        state_params,
+    )
+    oracle_closed_form_elbo_terms = oracle_edge_elbo_closed_form_terms(
+        eval_oracle,
+        eval_batch,
+        state_params,
+    )
 
     output_dir = Path(config.get("output_dir", "outputs/linear_gaussian_supervised_edge_mlp"))
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_loss_history(output_dir / "loss_history.csv", history)
+    _write_config(output_dir / "config.yaml", config)
+    np.savez(output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()})
     metrics = {
         "objective": objective,
         "train_batch_size": data_config.batch_size,
@@ -183,18 +232,37 @@ def main() -> None:
         "filter_kl": filter_kl,
         "edge_kl": float(jnp.mean(edge_kl_bt)),
         "state_rmse": state_rmse,
+        "state_rmse_global": state_rmse,
+        "state_rmse_time_mean": state_rmse_time_mean,
+        "state_nll": state_nll,
+        "oracle_state_rmse": oracle_state_rmse,
+        "oracle_state_rmse_global": oracle_state_rmse,
+        "oracle_state_rmse_time_mean": oracle_state_rmse_time_mean,
+        "oracle_state_nll": oracle_state_nll,
         "predictive_nll": predictive_nll,
         "predictive_rmse": predictive_rmse,
         "oracle_predictive_nll": oracle_predictive_nll,
         "oracle_predictive_rmse": oracle_predictive_rmse,
+        "mean_filter_variance": mean_filter_var,
+        "oracle_mean_filter_variance": oracle_mean_filter_var,
+        "variance_ratio": variance_ratio,
         "mean_backward_variance": mean_backward_var,
         "mean_edge_covariance_trace": mean_edge_var_trace,
         "max_abs_edge_mean": max_abs_edge_mean,
+        **coverage_metrics,
+        **oracle_coverage_metrics,
     }
     if elbo_terms is not None:
         metrics.update(_mean_elbo_term_metrics(elbo_terms, prefix="elbo"))
     if oracle_elbo_terms is not None:
         metrics.update(_mean_elbo_term_metrics(oracle_elbo_terms, prefix="oracle_elbo"))
+    metrics.update(_mean_elbo_term_metrics(closed_form_elbo_terms, prefix="closed_form_elbo"))
+    metrics.update(
+        _mean_elbo_term_metrics(
+            oracle_closed_form_elbo_terms,
+            prefix="oracle_closed_form_elbo",
+        )
+    )
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -214,6 +282,9 @@ def main() -> None:
         "edge_kl_over_time": np.asarray(edge_kl_t),
         "filter_kl_over_time": np.asarray(filter_kl_t),
         "state_rmse_over_time": np.asarray(state_rmse_t),
+        "oracle_state_rmse_over_time": np.asarray(oracle_state_rmse_t),
+        "state_nll_over_time": np.asarray(mean_over_batch(state_nll_bt)),
+        "oracle_state_nll_over_time": np.asarray(mean_over_batch(oracle_state_nll_bt)),
         "predictive_nll_over_time": np.asarray(mean_over_batch(predictive_nll_bt)),
         "predictive_rmse_over_time": np.asarray(predictive_rmse_t),
         "oracle_predictive_nll_over_time": np.asarray(mean_over_batch(oracle_predictive_nll_bt)),
@@ -225,10 +296,22 @@ def main() -> None:
         diagnostics.update(_elbo_term_time_series(elbo_terms, prefix="elbo"))
     if oracle_elbo_terms is not None:
         diagnostics.update(_elbo_term_time_series(oracle_elbo_terms, prefix="oracle_elbo"))
+    diagnostics.update(_elbo_term_time_series(closed_form_elbo_terms, prefix="closed_form_elbo"))
+    diagnostics.update(
+        _elbo_term_time_series(
+            oracle_closed_form_elbo_terms,
+            prefix="oracle_closed_form_elbo",
+        )
+    )
     np.savez(output_dir / "diagnostics.npz", **diagnostics)
     elbo_summary_lines = [
         *_elbo_summary_lines(elbo_terms, label="ELBO"),
         *_elbo_summary_lines(oracle_elbo_terms, label="oracle ELBO"),
+        *_elbo_summary_lines(closed_form_elbo_terms, label="closed-form ELBO"),
+        *_elbo_summary_lines(
+            oracle_closed_form_elbo_terms,
+            label="oracle closed-form ELBO",
+        ),
     ]
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(
@@ -247,11 +330,25 @@ def main() -> None:
                 f"| final loss | {final_loss:.6f} |",
                 f"| edge KL | {float(jnp.mean(edge_kl_bt)):.6f} |",
                 f"| filter KL | {filter_kl:.6f} |",
-                f"| state RMSE | {state_rmse:.6f} |",
+                f"| state RMSE global | {state_rmse:.6f} |",
+                f"| state RMSE time mean | {state_rmse_time_mean:.6f} |",
+                f"| state NLL | {state_nll:.6f} |",
+                f"| oracle state RMSE global | {oracle_state_rmse:.6f} |",
+                f"| oracle state RMSE time mean | {oracle_state_rmse_time_mean:.6f} |",
+                f"| oracle state NLL | {oracle_state_nll:.6f} |",
                 f"| predictive NLL | {predictive_nll:.6f} |",
                 f"| predictive RMSE | {predictive_rmse:.6f} |",
                 f"| oracle predictive NLL | {oracle_predictive_nll:.6f} |",
                 f"| oracle predictive RMSE | {oracle_predictive_rmse:.6f} |",
+                f"| coverage 50 | {coverage_metrics['coverage_50']:.6f} |",
+                f"| coverage 90 | {coverage_metrics['coverage_90']:.6f} |",
+                f"| coverage 95 | {coverage_metrics['coverage_95']:.6f} |",
+                f"| oracle coverage 50 | {oracle_coverage_metrics['oracle_coverage_50']:.6f} |",
+                f"| oracle coverage 90 | {oracle_coverage_metrics['oracle_coverage_90']:.6f} |",
+                f"| oracle coverage 95 | {oracle_coverage_metrics['oracle_coverage_95']:.6f} |",
+                f"| mean filter variance | {mean_filter_var:.6f} |",
+                f"| oracle mean filter variance | {oracle_mean_filter_var:.6f} |",
+                f"| variance ratio | {variance_ratio:.6f} |",
                 f"| mean backward variance | {mean_backward_var:.6f} |",
                 f"| mean edge covariance trace | {mean_edge_var_trace:.6f} |",
                 f"| max abs edge mean | {max_abs_edge_mean:.6f} |",
@@ -267,6 +364,8 @@ def main() -> None:
                 "",
                 "- `loss_history.csv`",
                 "- `metrics.json`",
+                "- `config.yaml`",
+                "- `params.npz`",
                 "- `diagnostics.npz`",
                 "",
             ]
@@ -314,8 +413,28 @@ def _elbo_summary_lines(terms: EdgeElboTerms | None, *, label: str) -> list[str]
     ]
 
 
-def _scalar_gaussian_nll(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
-    return 0.5 * (jnp.log(2.0 * jnp.pi) + jnp.log(var) + (value - mean) ** 2 / var)
+def _coverage_metrics(
+    value: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    *,
+    prefix: str,
+) -> dict[str, float]:
+    z_scores = {
+        "50": 0.6744897501960817,
+        "90": 1.6448536269514722,
+        "95": 1.959963984540054,
+    }
+    return {
+        f"{prefix}_{level}": float(
+            gaussian_interval_coverage(value, mean, var, z_score=z_score)
+        )
+        for level, z_score in z_scores.items()
+    }
+
+
+def _write_config(path: Path, config: dict) -> None:
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
 def _make_eval_batch(

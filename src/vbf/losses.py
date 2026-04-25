@@ -166,6 +166,31 @@ def edge_elbo_terms_from_outputs(
     )
 
 
+def edge_elbo_closed_form_terms_from_outputs(
+    outputs: StructuredMLPOutputs,
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+) -> EdgeElboTerms:
+    """Return closed-form scalar Gaussian edge ELBO terms from model outputs."""
+
+    prev_filter_mean, prev_filter_var = previous_filter_beliefs(
+        outputs.filter_mean,
+        outputs.filter_var,
+        state_params,
+    )
+    return edge_elbo_closed_form_terms_from_factors(
+        batch,
+        state_params,
+        filter_mean=outputs.filter_mean,
+        filter_var=outputs.filter_var,
+        backward_a=outputs.backward_a,
+        backward_b=outputs.backward_b,
+        backward_var=outputs.backward_var,
+        prev_filter_mean=prev_filter_mean,
+        prev_filter_var=prev_filter_var,
+    )
+
+
 def oracle_edge_elbo_terms(
     oracle: EdgeOracleOutputs,
     batch: EpisodeBatch,
@@ -199,6 +224,38 @@ def oracle_edge_elbo_terms(
         prev_filter_mean=prev_filter_mean,
         prev_filter_var=prev_filter_var,
         num_samples=num_samples,
+    )
+
+
+def oracle_edge_elbo_closed_form_terms(
+    oracle: EdgeOracleOutputs,
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-9,
+) -> EdgeElboTerms:
+    """Return closed-form scalar Gaussian edge ELBO terms under the exact posterior."""
+
+    edge_cov = oracle.edge_cov
+    filter_var = jnp.maximum(oracle.filter_var, min_var)
+    backward_a = edge_cov[..., 0, 1] / filter_var
+    backward_b = oracle.edge_mean[..., 1] - backward_a * oracle.filter_mean
+    backward_var = jnp.maximum(edge_cov[..., 1, 1] - edge_cov[..., 0, 1] ** 2 / filter_var, min_var)
+    prev_filter_mean, prev_filter_var = previous_filter_beliefs(
+        oracle.filter_mean,
+        oracle.filter_var,
+        state_params,
+    )
+    return edge_elbo_closed_form_terms_from_factors(
+        batch,
+        state_params,
+        filter_mean=oracle.filter_mean,
+        filter_var=filter_var,
+        backward_a=backward_a,
+        backward_b=backward_b,
+        backward_var=backward_var,
+        prev_filter_mean=prev_filter_mean,
+        prev_filter_var=prev_filter_var,
     )
 
 
@@ -269,6 +326,57 @@ def edge_elbo_terms_from_factors(
     )
 
 
+def edge_elbo_closed_form_terms_from_factors(
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    filter_mean: jax.Array,
+    filter_var: jax.Array,
+    backward_a: jax.Array,
+    backward_b: jax.Array,
+    backward_var: jax.Array,
+    prev_filter_mean: jax.Array,
+    prev_filter_var: jax.Array,
+) -> EdgeElboTerms:
+    """Return analytic local edge ELBO terms for scalar Gaussian factors.
+
+    This is a variance-free reference for `edge_elbo_terms_from_factors`.
+    """
+
+    z_tm1_mean = backward_a * filter_mean + backward_b
+    z_tm1_var = backward_a**2 * filter_var + backward_var
+    z_t_z_tm1_cov = backward_a * filter_var
+
+    likelihood_var_term = (batch.y - batch.x * filter_mean) ** 2 + batch.x**2 * filter_var
+    log_likelihood = _expected_normal_log_prob(likelihood_var_term, state_params.r)
+
+    residual_mean = filter_mean - z_tm1_mean
+    residual_var = filter_var + z_tm1_var - 2.0 * z_t_z_tm1_cov
+    log_transition = _expected_normal_log_prob(residual_mean**2 + residual_var, state_params.q)
+
+    prev_residual = (z_tm1_mean - prev_filter_mean) ** 2 + z_tm1_var
+    log_prev_filter = _expected_normal_log_prob(prev_residual, prev_filter_var)
+
+    neg_log_current_filter = 0.5 * (LOG_2PI + jnp.log(filter_var) + 1.0)
+    neg_log_backward = 0.5 * (LOG_2PI + jnp.log(backward_var) + 1.0)
+    elbo = (
+        log_likelihood
+        + log_transition
+        + log_prev_filter
+        + neg_log_current_filter
+        + neg_log_backward
+    )
+
+    return EdgeElboTerms(
+        log_likelihood=log_likelihood,
+        log_transition=log_transition,
+        log_prev_filter=log_prev_filter,
+        neg_log_current_filter=neg_log_current_filter,
+        neg_log_backward=neg_log_backward,
+        elbo=elbo,
+    )
+
+
 def gaussian_kl(
     mean_p: jax.Array,
     cov_p: jax.Array,
@@ -287,3 +395,7 @@ def gaussian_kl(
     return 0.5 * (logdet_q - logdet_p - 2.0 + trace_term + quad_term)
 def _normal_log_prob(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
+
+
+def _expected_normal_log_prob(expected_squared_error: jax.Array, var: jax.Array | float) -> jax.Array:
+    return -0.5 * (LOG_2PI + jnp.log(var) + expected_squared_error / var)

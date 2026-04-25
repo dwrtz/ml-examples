@@ -3,7 +3,7 @@
 import numpy as np
 
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
-from vbf.metrics import rmse_over_batch
+from vbf.metrics import gaussian_interval_coverage, rmse_global, rmse_over_batch, rmse_time_mean
 
 
 def test_linear_gaussian_batch_reproducible_for_seed() -> None:
@@ -36,3 +36,21 @@ def test_rmse_over_batch_shape() -> None:
     rmse = rmse_over_batch(pred, target)
 
     assert rmse.shape == (2,)
+
+
+def test_rmse_global_and_time_mean_are_distinct_named_statistics() -> None:
+    pred = np.array([[0.0, 0.0], [0.0, 4.0]])
+    target = np.zeros_like(pred)
+
+    assert np.isclose(rmse_global(pred, target), 2.0)
+    assert np.isclose(rmse_time_mean(pred, target), np.sqrt(8.0) / 2.0)
+
+
+def test_gaussian_interval_coverage() -> None:
+    value = np.array([-0.5, 0.0, 0.5, 2.0])
+    mean = np.zeros_like(value)
+    var = np.ones_like(value)
+
+    coverage = gaussian_interval_coverage(value, mean, var, z_score=1.0)
+
+    assert np.isclose(coverage, 0.75)

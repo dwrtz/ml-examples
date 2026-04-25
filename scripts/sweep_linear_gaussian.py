@@ -26,7 +26,10 @@ class Row:
     filter_kl: float
     edge_kl: float
     state_rmse: float
+    state_rmse_time_mean: float
     state_nll: float
+    coverage_90: float
+    variance_ratio: float
     predictive_nll: float
 
 
@@ -115,7 +118,14 @@ def _load_run(run_dir: Path, *, seed: int, model: str) -> Row:
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     with np.load(diagnostics_path) as diagnostics:
+        state_rmse = _global_rmse(diagnostics["learned_filter_mean"], diagnostics["z"])
+        state_rmse_time_mean = _time_mean_rmse(diagnostics["learned_filter_mean"], diagnostics["z"])
         state_nll = _scalar_gaussian_nll(
+            diagnostics["z"],
+            diagnostics["learned_filter_mean"],
+            diagnostics["learned_filter_var"],
+        )
+        coverage = _coverage_90(
             diagnostics["z"],
             diagnostics["learned_filter_mean"],
             diagnostics["learned_filter_var"],
@@ -127,8 +137,11 @@ def _load_run(run_dir: Path, *, seed: int, model: str) -> Row:
         objective=str(metrics["objective"]),
         filter_kl=float(metrics["filter_kl"]),
         edge_kl=float(metrics["edge_kl"]),
-        state_rmse=float(metrics["state_rmse"]),
+        state_rmse=float(metrics.get("state_rmse_global", state_rmse)),
+        state_rmse_time_mean=float(metrics.get("state_rmse_time_mean", state_rmse_time_mean)),
         state_nll=float(np.mean(state_nll)),
+        coverage_90=float(metrics.get("coverage_90", coverage)),
+        variance_ratio=float(metrics.get("variance_ratio", np.nan)),
         predictive_nll=float(metrics["predictive_nll"]),
     )
 
@@ -139,8 +152,14 @@ def _load_oracle_reference(run_dir: Path, *, seed: int) -> Row:
         raise FileNotFoundError(f"Missing diagnostics file: {diagnostics_path}")
 
     with np.load(diagnostics_path) as diagnostics:
-        state_rmse = np.sqrt(np.mean((diagnostics["oracle_filter_mean"] - diagnostics["z"]) ** 2))
+        state_rmse = _global_rmse(diagnostics["oracle_filter_mean"], diagnostics["z"])
+        state_rmse_time_mean = _time_mean_rmse(diagnostics["oracle_filter_mean"], diagnostics["z"])
         state_nll = _scalar_gaussian_nll(
+            diagnostics["z"],
+            diagnostics["oracle_filter_mean"],
+            diagnostics["oracle_filter_var"],
+        )
+        coverage = _coverage_90(
             diagnostics["z"],
             diagnostics["oracle_filter_mean"],
             diagnostics["oracle_filter_var"],
@@ -158,13 +177,30 @@ def _load_oracle_reference(run_dir: Path, *, seed: int) -> Row:
         filter_kl=0.0,
         edge_kl=0.0,
         state_rmse=float(state_rmse),
+        state_rmse_time_mean=float(state_rmse_time_mean),
         state_nll=float(np.mean(state_nll)),
+        coverage_90=float(coverage),
+        variance_ratio=1.0,
         predictive_nll=float(np.mean(predictive_nll)),
     )
 
 
 def _scalar_gaussian_nll(value: np.ndarray, mean: np.ndarray, var: np.ndarray) -> np.ndarray:
     return 0.5 * (LOG_2PI + np.log(var) + (value - mean) ** 2 / var)
+
+
+def _global_rmse(pred: np.ndarray, target: np.ndarray) -> float:
+    return float(np.sqrt(np.mean((pred - target) ** 2)))
+
+
+def _time_mean_rmse(pred: np.ndarray, target: np.ndarray) -> float:
+    return float(np.mean(np.sqrt(np.mean((pred - target) ** 2, axis=0))))
+
+
+def _coverage_90(value: np.ndarray, mean: np.ndarray, var: np.ndarray) -> float:
+    z_score = 1.6448536269514722
+    half_width = z_score * np.sqrt(var)
+    return float(np.mean((value >= mean - half_width) & (value <= mean + half_width)))
 
 
 def _write_csv(path: Path, rows: list[Row]) -> None:
@@ -178,7 +214,10 @@ def _write_csv(path: Path, rows: list[Row]) -> None:
                 "filter_kl",
                 "edge_kl",
                 "state_rmse",
+                "state_rmse_time_mean",
                 "state_nll",
+                "coverage_90",
+                "variance_ratio",
                 "predictive_nll",
             ],
         )
@@ -192,7 +231,16 @@ def _aggregate(rows: list[Row]) -> dict[str, dict[str, float | str | int]]:
     for key in sorted({row.objective for row in rows}):
         grouped = [row for row in rows if row.objective == key]
         summary[key] = {"model": grouped[0].model, "num_seeds": len(grouped)}
-        for metric in ("filter_kl", "edge_kl", "state_rmse", "state_nll", "predictive_nll"):
+        for metric in (
+            "filter_kl",
+            "edge_kl",
+            "state_rmse",
+            "state_rmse_time_mean",
+            "state_nll",
+            "coverage_90",
+            "variance_ratio",
+            "predictive_nll",
+        ):
             values = np.asarray([getattr(row, metric) for row in grouped], dtype=np.float64)
             summary[key][f"{metric}_mean"] = float(np.mean(values))
             summary[key][f"{metric}_std"] = float(np.std(values, ddof=0))
@@ -204,8 +252,8 @@ def _render_report(rows: list[Row]) -> str:
     lines = [
         "# Linear-Gaussian Seed Sweep",
         "",
-        "| Model | Objective | Seeds | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+        "| Model | Objective | Seeds | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for objective, metrics in summary.items():
         lines.append(
@@ -213,6 +261,8 @@ def _render_report(rows: list[Row]) -> str:
             "{filter_kl_std:.6f} | {edge_kl_mean:.6f} +/- {edge_kl_std:.6f} | "
             "{state_rmse_mean:.6f} +/- {state_rmse_std:.6f} | "
             "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
+            "{coverage_90_mean:.6f} +/- {coverage_90_std:.6f} | "
+            "{variance_ratio_mean:.6f} +/- {variance_ratio_std:.6f} | "
             "{predictive_nll_mean:.6f} +/- {predictive_nll_std:.6f} |".format(
                 objective=objective,
                 **metrics,
@@ -223,14 +273,16 @@ def _render_report(rows: list[Row]) -> str:
             "",
             "## Per-Seed Rows",
             "",
-            "| Seed | Model | Objective | filter KL | edge KL | state RMSE | state NLL | pred NLL |",
-            "|---:|---|---|---:|---:|---:|---:|---:|",
+            "| Seed | Model | Objective | filter KL | edge KL | state RMSE global | state RMSE time mean | state NLL | cov 90 | var ratio | pred NLL |",
+            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
         lines.append(
             f"| {row.seed} | {row.model} | {row.objective} | {row.filter_kl:.6f} | "
-            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} | "
+            f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | "
+            f"{row.state_rmse_time_mean:.6f} | {row.state_nll:.6f} | "
+            f"{row.coverage_90:.6f} | {row.variance_ratio:.6f} | "
             f"{row.predictive_nll:.6f} |"
         )
     lines.append("")
