@@ -33,9 +33,26 @@ from vbf.metrics import (
     scalar_gaussian_kl,
     scalar_gaussian_nll,
 )
-from vbf.models.cells import edge_mean_cov_from_outputs, init_structured_mlp_params, run_structured_mlp_filter
+from vbf.models.cells import (
+    StructuredMLPOutputs,
+    edge_mean_cov_from_outputs,
+    init_split_head_mlp_params,
+    init_structured_mlp_params,
+    run_split_head_mlp_filter,
+    run_split_head_mlp_teacher_forced,
+    run_structured_mlp_filter,
+)
 from vbf.predictive import linear_gaussian_predictive_from_filter
 from vbf.train import adam_update, init_adam
+
+
+SUPPORTED_MODELS = {
+    "supervised_edge_mlp",
+    "elbo_edge_mlp",
+    "zero_init_edge_mlp",
+    "frozen_marginal_backward_mlp",
+    "supervised_edge_split_mlp",
+}
 
 
 def main() -> None:
@@ -46,7 +63,7 @@ def main() -> None:
     with Path(args.config).open() as stream:
         config = yaml.safe_load(stream)
 
-    if config["model"] not in {"supervised_edge_mlp", "elbo_edge_mlp"}:
+    if config["model"] not in SUPPORTED_MODELS:
         raise ValueError(f"Unsupported linear-Gaussian training model: {config['model']}")
 
     data_config = LinearGaussianDataConfig(**config["data"])
@@ -57,6 +74,8 @@ def main() -> None:
     edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
     transition_consistency_weight = float(training_config.get("transition_consistency_weight", 0.0))
     objective = config["model"]
+    if objective == "zero_init_edge_mlp" and int(training_config["steps"]) != 0:
+        raise ValueError("zero_init_edge_mlp must use training.steps: 0")
 
     train_batch = make_linear_gaussian_batch(data_config, state_params, seed=config["seed"])
     train_oracle = kalman_edge_posterior_scalar(train_batch, state_params)
@@ -67,15 +86,20 @@ def main() -> None:
     eval_seed_start = int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000))
     eval_batch = _make_eval_batch(eval_data_config, state_params, eval_seed_start, eval_num_batches)
     eval_oracle = kalman_edge_posterior_scalar(eval_batch, state_params)
-    params = init_structured_mlp_params(
-        jax.random.PRNGKey(config["seed"] + 1),
-        hidden_dim=int(training_config["hidden_dim"]),
-    )
+    params = _init_model_params(objective, config, training_config)
     opt_state = init_adam(params)
 
     def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
-        if objective == "supervised_edge_mlp":
+        if objective in {"supervised_edge_mlp", "zero_init_edge_mlp", "frozen_marginal_backward_mlp"}:
             return supervised_edge_kl_loss(
+                current_params,
+                train_batch,
+                state_params,
+                train_oracle,
+                min_var=min_var,
+            )
+        if objective == "supervised_edge_split_mlp":
+            return _supervised_split_head_edge_kl_loss(
                 current_params,
                 train_batch,
                 state_params,
@@ -100,6 +124,8 @@ def main() -> None:
     for step in range(1, int(training_config["steps"]) + 1):
         train_key, step_key = jax.random.split(train_key)
         loss_value, grads = value_and_grad(params, step_key)
+        if objective == "frozen_marginal_backward_mlp":
+            grads = _freeze_structured_filter_head_grads(grads)
         params, opt_state = adam_update(
             params,
             grads,
@@ -110,7 +136,7 @@ def main() -> None:
             history.append((step, float(loss_value)))
 
     final_loss = float(loss_fn(params, jax.random.PRNGKey(config["seed"] + 3)))
-    outputs = run_structured_mlp_filter(params, eval_batch, state_params, min_var=min_var)
+    outputs = _run_model_filter(params, objective, eval_batch, state_params, min_var=min_var)
     pred_edge_mean, pred_edge_cov = edge_mean_cov_from_outputs(outputs)
     filter_kl_bt = scalar_gaussian_kl(
         eval_oracle.filter_mean,
@@ -430,6 +456,63 @@ def _coverage_metrics(
             gaussian_interval_coverage(value, mean, var, z_score=z_score)
         )
         for level, z_score in z_scores.items()
+    }
+
+
+def _init_model_params(
+    objective: str,
+    config: dict,
+    training_config: dict,
+) -> dict[str, jax.Array]:
+    key = jax.random.PRNGKey(config["seed"] + 1)
+    hidden_dim = int(training_config["hidden_dim"])
+    if objective == "supervised_edge_split_mlp":
+        return init_split_head_mlp_params(key, hidden_dim=hidden_dim)
+    return init_structured_mlp_params(key, hidden_dim=hidden_dim)
+
+
+def _run_model_filter(
+    params: dict[str, jax.Array],
+    objective: str,
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float,
+) -> StructuredMLPOutputs:
+    if objective == "supervised_edge_split_mlp":
+        return run_split_head_mlp_filter(params, batch, state_params, min_var=min_var)
+    return run_structured_mlp_filter(params, batch, state_params, min_var=min_var)
+
+
+def _supervised_split_head_edge_kl_loss(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    oracle,
+    *,
+    min_var: float,
+) -> jax.Array:
+    outputs = run_split_head_mlp_teacher_forced(
+        params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+        min_var=min_var,
+    )
+    pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
+    return jnp.mean(gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov))
+
+
+def _freeze_structured_filter_head_grads(
+    grads: dict[str, jax.Array],
+) -> dict[str, jax.Array]:
+    """Freeze raw gain/variance outputs while learning the backward conditional."""
+
+    return {
+        **grads,
+        "w2": grads["w2"].at[:, :2].set(0.0),
+        "b2": grads["b2"].at[:2].set(0.0),
     }
 
 

@@ -16,7 +16,10 @@ from vbf.losses import (
 )
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
+    init_split_head_mlp_params,
     init_structured_mlp_params,
+    run_split_head_mlp_filter,
+    run_split_head_mlp_teacher_forced,
     run_structured_mlp_filter,
     run_structured_mlp_teacher_forced,
 )
@@ -199,3 +202,28 @@ def test_structured_mlp_teacher_forced_shapes() -> None:
 
     assert outputs.filter_mean.shape == (3, 5)
     assert outputs.filter_var.shape == (3, 5)
+
+
+def test_split_head_mlp_filter_shapes() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=21,
+    )
+    oracle = kalman_edge_posterior_scalar(batch, state_params)
+    mlp_params = init_split_head_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    rollout_outputs = run_split_head_mlp_filter(mlp_params, batch, state_params)
+    teacher_outputs = run_split_head_mlp_teacher_forced(
+        mlp_params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+    )
+
+    assert rollout_outputs.filter_mean.shape == (3, 5)
+    assert rollout_outputs.filter_var.shape == (3, 5)
+    assert teacher_outputs.filter_mean.shape == (3, 5)
+    assert teacher_outputs.backward_var.shape == (3, 5)

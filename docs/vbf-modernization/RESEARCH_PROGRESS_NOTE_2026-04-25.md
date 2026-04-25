@@ -102,5 +102,42 @@ Then add the director's three diagnostic baselines:
 - frozen Kalman-structured marginal with learned backward conditional only;
 - separate filter and backward heads.
 
+These baselines have been added as runnable configs:
+
+```text
+experiments/linear_gaussian/09_zero_init_edge_mlp.yaml
+experiments/linear_gaussian/10_frozen_marginal_backward_mlp.yaml
+experiments/linear_gaussian/11_supervised_edge_split_mlp.yaml
+```
+
+Run them with:
+
+```text
+uv run python scripts/sweep_diagnostic_baselines.py
+```
+
+The five-seed diagnostic sweep was run to:
+
+```text
+outputs/linear_gaussian_diagnostic_baselines/
+```
+
+Summary:
+
+| Model | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| frozen marginal backward MLP | 0.000000 | 0.221206 | 0.522426 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+| split-head supervised MLP | 0.262928 | 0.496513 | 0.740461 | 0.664146 | 0.875427 | 2.031336 | 0.732080 |
+| zero-init no training | 0.000000 | 1.050438 | 0.522426 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+
+Interpretation:
+
+- The zero-initialized strict MLP already carries an almost exact Kalman
+  filtering marginal because of the residualized Kalman update.
+- Training only the backward conditional reduces edge KL substantially, from
+  about `1.05` to `0.22`, without changing the filtering marginal.
+- The separate-hidden-tower split-head supervised baseline is currently worse
+  than the original shared-hidden supervised MLP at the same 250-step budget.
+
 After those baselines are in place, the learned predictive head remains the next
 natural modernization milestone.
