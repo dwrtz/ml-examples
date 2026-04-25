@@ -352,3 +352,75 @@ The code now includes the experiment hooks needed for the next decision points:
   compatible alias for `analytic_residual_predictive_head`.
 - `scripts/sweep_diagnostic_baselines.py` accepts `--steps 250,1000,3000` for
   matched-budget frozen-marginal and split-head diagnostics.
+
+## 12. Follow-up experiment results
+
+The matched-budget diagnostic baseline sweep was run to:
+
+```text
+outputs/linear_gaussian_diagnostic_baselines_budgeted/
+```
+
+Summary:
+
+| Model | Steps | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| zero-init no training | 0 | 0.000000 | 1.050438 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+| frozen marginal backward MLP | 250 | 0.000000 | 0.221206 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+| frozen marginal backward MLP | 1000 | 0.000000 | 0.112827 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+| frozen marginal backward MLP | 3000 | 0.000000 | 0.066231 | 0.401983 | 0.900220 | 1.000006 | 0.600858 |
+| split-head supervised MLP | 250 | 0.262928 | 0.496513 | 0.664146 | 0.875427 | 2.031336 | 0.732080 |
+| split-head supervised MLP | 1000 | 0.113507 | 0.195412 | 0.513492 | 0.892826 | 1.565684 | 0.664181 |
+| split-head supervised MLP | 3000 | 0.086517 | 0.153136 | 0.487062 | 0.900334 | 1.698812 | 0.651496 |
+
+Interpretation:
+
+- The frozen-marginal backward conditional keeps exact Kalman filtering metrics
+  and reduces edge KL from `1.05` at zero-init to `0.066` at 3000 steps.
+- The split-head supervised baseline improves with budget, but it remains worse
+  than frozen-marginal on edge KL and much worse on rolled-out filtering and
+  predictive metrics.
+- This strengthens the conclusion that the current structured benchmark is very
+  effective at isolating backward/edge learning from filtering-marginal
+  learning.
+
+The residualization/objective matrix was run in parallel chunks under:
+
+```text
+outputs/linear_gaussian_residualization_objective_matrix_split/
+```
+
+Selected 3000-step rows:
+
+| Objective | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| MC ELBO structured | 0.090239 | 0.216081 | 0.492098 | 0.849060 | 0.662955 | 0.622721 | -0.702407 |
+| closed-form ELBO structured | 0.076545 | 0.185636 | 0.478342 | 0.855013 | 0.651087 | 0.619151 | -0.699885 |
+| MC ELBO direct | 1.712402 | 2.676846 | 2.113122 | 0.690120 | 0.383992 | 0.875051 | -1.139487 |
+| closed-form ELBO direct | 1.855637 | 2.879886 | 2.254513 | 0.689697 | 0.379439 | 0.872124 | -1.136147 |
+| supervised direct | 4.582399 | 6.266737 | 4.968732 | 0.823372 | 1.994343 | 3.107603 | -20.901517 |
+
+Interpretation:
+
+- Closed-form ELBO modestly improves the structured residualized model relative
+  to MC ELBO, but it does not remove the under-dispersion problem. MC variance is
+  therefore not the whole ELBO bottleneck.
+- The direct non-residualized filter is much worse under both MC and closed-form
+  ELBO at this budget. The current scalar benchmark performance depends heavily
+  on the analytic Kalman-structured marginal update.
+- Direct supervised teacher-forced edge distillation is unstable and should not
+  be used as the main less-structured supervised baseline without a self-fed
+  variant or stronger optimization controls.
+
+The direct predictive-head sweep was rerun at 3000 steps to:
+
+```text
+outputs/linear_gaussian_direct_predictive_head_sweep_3000/
+```
+
+At 3000 steps the direct predictive head reaches predictive NLL `0.625870` on
+oracle beliefs, versus exact Kalman predictive NLL `0.600858`. On ELBO beliefs,
+the direct head gets `0.670554`, worse than the analytic predictive distribution
+from those same beliefs (`0.640331`). This supports the previous interpretation:
+in the scalar linear-Gaussian benchmark, predictive mapping is not the main
+bottleneck; belief quality and calibration are.

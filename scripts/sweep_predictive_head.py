@@ -33,6 +33,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="experiments/linear_gaussian/06_predictive_head.yaml")
     parser.add_argument("--seeds", default="321,322,323,324,325")
+    parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--output-dir", default="outputs/linear_gaussian_predictive_head_sweep")
     parser.add_argument(
         "--learned-filter-root",
@@ -44,8 +45,13 @@ def main() -> None:
 
     seeds = _parse_seeds(args.seeds)
     base_config = _read_config(Path(args.config))
-    if base_config["model"] != "predictive_head":
-        raise ValueError("predictive sweep config must use model: predictive_head")
+    supported_models = {
+        "predictive_head",
+        "analytic_residual_predictive_head",
+        "direct_predictive_head",
+    }
+    if base_config["model"] not in supported_models:
+        raise ValueError(f"predictive sweep config must use one of: {sorted(supported_models)}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +62,11 @@ def main() -> None:
         run_dir = output_dir / f"seed_{seed}"
         run_config_path = output_dir / "configs" / f"seed_{seed}.yaml"
         config = {**base_config, "seed": seed, "output_dir": str(run_dir)}
+        if args.steps is not None:
+            config = {
+                **config,
+                "training": {**config["training"], "steps": args.steps},
+            }
         diagnostics_path = learned_filter_root / f"seed_{seed}" / "diagnostics.npz"
         if diagnostics_path.exists():
             config = {

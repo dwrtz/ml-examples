@@ -36,6 +36,11 @@ class Row:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--configs",
+        default=None,
+        help="Comma-separated config paths. Overrides --supervised-config/--elbo-config.",
+    )
+    parser.add_argument(
         "--supervised-config",
         default="experiments/linear_gaussian/01_supervised_edge_mlp.yaml",
     )
@@ -55,10 +60,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    run_specs = [
-        ("MLP supervised edge KL", Path(args.supervised_config)),
-        ("MLP edge ELBO", Path(args.elbo_config)),
-    ]
+    run_specs = _run_specs_from_args(args)
 
     rows: list[Row] = []
     for label, config_path in run_specs:
@@ -107,6 +109,22 @@ def _parse_ints(value: str, *, name: str) -> list[int]:
     return values
 
 
+def _run_specs_from_args(args: argparse.Namespace) -> list[tuple[str, Path]]:
+    if args.configs is None:
+        return [
+            ("MLP supervised edge KL", Path(args.supervised_config)),
+            ("MLP edge ELBO", Path(args.elbo_config)),
+        ]
+    paths = [Path(item.strip()) for item in args.configs.split(",") if item.strip()]
+    if not paths:
+        raise ValueError("--configs must include at least one config path")
+    specs = []
+    for path in paths:
+        config = _read_config(path)
+        specs.append((str(config.get("name", config["model"])), path))
+    return specs
+
+
 def _read_config(path: Path) -> dict[str, Any]:
     with path.open() as stream:
         return yaml.safe_load(stream)
@@ -121,7 +139,7 @@ def _make_config(
     output_dir: Path,
 ) -> dict[str, Any]:
     training = {**base_config["training"], "steps": steps}
-    if base_config["model"] == "elbo_edge_mlp":
+    if base_config["model"] in {"elbo_edge_mlp", "direct_elbo_edge_mlp"}:
         training["num_elbo_samples"] = num_elbo_samples
     return {
         **base_config,
