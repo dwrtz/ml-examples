@@ -22,6 +22,7 @@ from vbf.losses import (
     gaussian_kl,
     oracle_edge_elbo_closed_form_terms,
     oracle_edge_elbo_terms,
+    self_fed_supervised_edge_kl_loss,
     supervised_edge_kl_loss,
 )
 from vbf.metrics import (
@@ -48,6 +49,7 @@ from vbf.train import adam_update, init_adam
 
 SUPPORTED_MODELS = {
     "supervised_edge_mlp",
+    "self_fed_supervised_edge_mlp",
     "elbo_edge_mlp",
     "zero_init_edge_mlp",
     "frozen_marginal_backward_mlp",
@@ -92,6 +94,14 @@ def main() -> None:
     def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
         if objective in {"supervised_edge_mlp", "zero_init_edge_mlp", "frozen_marginal_backward_mlp"}:
             return supervised_edge_kl_loss(
+                current_params,
+                train_batch,
+                state_params,
+                train_oracle,
+                min_var=min_var,
+            )
+        if objective == "self_fed_supervised_edge_mlp":
+            return self_fed_supervised_edge_kl_loss(
                 current_params,
                 train_batch,
                 state_params,

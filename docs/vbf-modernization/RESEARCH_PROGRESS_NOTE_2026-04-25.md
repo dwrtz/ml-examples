@@ -238,3 +238,55 @@ Next, add a self-fed supervised objective. Current supervised training is
 teacher-forced on oracle previous filtering beliefs but evaluated by rolling out
 the model's own beliefs. A self-fed supervised variant will separate
 teacher-forcing mismatch from objective mismatch.
+
+## 8. Self-fed supervised objective
+
+The self-fed supervised variant has been added:
+
+```text
+experiments/linear_gaussian/12_self_fed_supervised_edge_mlp.yaml
+scripts/sweep_self_fed_supervised.py
+```
+
+Training objective:
+
+```text
+roll out q_model using its own q^F_{t-1}
+minimize KL(q_oracle_edge || q_model_edge) at each time step
+```
+
+This keeps supervised oracle edge targets but removes the teacher-forcing
+mismatch from the original supervised baseline.
+
+The five-seed sweep was run to:
+
+```text
+outputs/linear_gaussian_self_fed_supervised/
+```
+
+Summary:
+
+| Objective | Steps | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| self-fed supervised | 250 | 0.026810 | 0.191091 | 0.556726 | 0.428692 | 0.898551 | 1.513749 | 0.613313 | -1.010395 |
+| self-fed supervised | 1000 | 0.020340 | 0.096317 | 0.557577 | 0.421941 | 0.899369 | 1.368491 | 0.610837 | -0.771260 |
+| self-fed supervised | 3000 | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
+| ELBO | 3000 | 0.090239 | 0.216081 | 0.558504 | 0.492098 | 0.849060 | 0.662955 | 0.622721 | -0.702407 |
+| teacher-forced supervised | 3000 | 0.120872 | 0.212267 | 0.716988 | 0.521150 | 0.897465 | 1.949102 | 0.670420 | -1.533387 |
+
+Interpretation:
+
+- The main supervised failure was teacher-forcing mismatch. When trained
+  self-fed, supervised edge distillation becomes much stronger than the
+  teacher-forced baseline.
+- At 3000 steps, self-fed supervised beats ELBO on filter KL, edge KL, state
+  NLL, coverage, predictive NLL, and closed-form ELBO.
+- Self-fed supervised is still over-dispersed relative to Kalman
+  (`variance_ratio` about `1.26` at 3000 steps), but much less than
+  teacher-forced supervised.
+- ELBO remains under-dispersed, while self-fed supervised remains
+  over-dispersed. This makes calibration the next central issue.
+
+Next useful experiment: add a calibrated/self-fed supervised objective variant
+or variance regularizer that targets variance ratio and NLL without degrading
+edge KL.

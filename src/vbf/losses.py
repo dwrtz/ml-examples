@@ -62,6 +62,26 @@ def supervised_edge_kl_loss(
     return jnp.mean(kl)
 
 
+def self_fed_supervised_edge_kl_loss(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    oracle: EdgeOracleOutputs,
+    *,
+    min_var: float = 1e-6,
+) -> jax.Array:
+    """Mean rollout `KL(q_oracle_edge || q_learned_edge)`.
+
+    Unlike `supervised_edge_kl_loss`, this trains against oracle edge targets
+    while feeding the update cell its own previous filtering beliefs.
+    """
+
+    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
+    kl = gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
+    return jnp.mean(kl)
+
+
 def edge_elbo_loss(
     mlp_params: dict[str, jax.Array],
     batch: EpisodeBatch,
