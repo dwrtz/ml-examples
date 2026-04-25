@@ -258,6 +258,72 @@ minimize KL(q_oracle_edge || q_model_edge) at each time step
 This keeps supervised oracle edge targets but removes the teacher-forcing
 mismatch from the original supervised baseline.
 
+The five-seed self-fed sweep has now been run to:
+
+```text
+outputs/linear_gaussian_self_fed_supervised/
+```
+
+Summary at 3000 steps:
+
+| Model | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| self-fed supervised | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
+| ELBO | 0.090239 | 0.216081 | 0.558504 | 0.492098 | 0.849060 | 0.662955 | 0.622721 | -0.702407 |
+| teacher-forced supervised | 0.120872 | 0.212267 | 0.716988 | 0.521150 | 0.897465 | 1.949102 | 0.670420 | -1.533387 |
+
+Interpretation:
+
+- The earlier supervised weakness was largely a teacher-forcing mismatch.
+- Self-fed supervised is now the strongest learned linear-Gaussian baseline on
+  filter KL, edge KL, state NLL, coverage, predictive NLL, and closed-form ELBO.
+- ELBO remains the main unsupervised baseline and still improves with training
+  budget, but it is under-dispersed relative to Kalman.
+- Teacher-forced supervised should remain in reports as a failure-mode baseline,
+  not as the best supervised comparison.
+
+## 9. Self-fed variance-ratio regularizer
+
+A diagnostic self-fed supervised variance-ratio regularizer has been added and
+run. The useful fixed sweep is:
+
+```text
+outputs/linear_gaussian_self_fed_variance_regularizer_fixed/
+```
+
+Summary:
+
+| variance weight | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
+| 0.1 | 0.012900 | 0.051457 | 0.552749 | 0.415025 | 0.898189 | 1.013291 | 0.607679 | -0.679857 |
+| 1 | 0.014044 | 0.054504 | 0.553757 | 0.416383 | 0.897880 | 0.999278 | 0.608232 | -0.683403 |
+| 10 | 0.013349 | 0.053560 | 0.550709 | 0.415677 | 0.897091 | 1.000108 | 0.608097 | -0.679481 |
+
+Interpretation:
+
+- The regularizer successfully fixes the mean variance ratio with little cost.
+- A weight around `0.1` is a reasonable calibrated supervised baseline for the
+  next linear-Gaussian generalization suites.
+- The earlier directory
+  `outputs/linear_gaussian_self_fed_variance_regularizer/` should be treated as
+  stale because those rows were identical across weights.
+
+## 10. Current next steps
+
+The next high-leverage experiments are linear-Gaussian generalization suites,
+not Mamba or nonlinear observations yet:
+
+1. Weak observability: compare sinusoidal, weak sinusoidal, intermittent
+   sinusoidal, zero, and random observation covariates.
+2. Q/R generalization: train/evaluate across multiple process-noise and
+   observation-noise settings.
+3. Report exact Kalman, ELBO, self-fed supervised, and calibrated self-fed
+   supervised rows in the same tables.
+
+Mamba and nonlinear observations should remain postponed until the strict-filter
+generalization story is stable.
+
 The five-seed sweep was run to:
 
 ```text

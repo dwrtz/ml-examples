@@ -19,6 +19,9 @@ class LinearGaussianDataConfig:
     time_steps: int = 96
     x_pattern: str = "sinusoidal"
     x_cycles: float = 3.0
+    x_amplitude: float = 1.0
+    x_constant: float = 1.0
+    x_missing_period: int = 4
 
 
 @dataclass(frozen=True)
@@ -61,9 +64,9 @@ def make_linear_gaussian_batch(
 
     key = jax.random.PRNGKey(seed)
     key_z0, key_w, key_v = jax.random.split(key, 3)
+    key_x = jax.random.fold_in(key, 42)
 
-    x_single = _make_x(config)
-    x = jnp.broadcast_to(x_single, (config.batch_size, config.time_steps))
+    x = _make_x(config, key_x)
 
     z_initial = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
         key_z0,
@@ -85,10 +88,50 @@ def make_linear_gaussian_batch(
     return EpisodeBatch(x=x, y=y, z=z)
 
 
-def _make_x(config: LinearGaussianDataConfig) -> jax.Array:
-    if config.x_pattern != "sinusoidal":
-        raise ValueError(f"Unsupported x_pattern: {config.x_pattern}")
+def _make_x(config: LinearGaussianDataConfig, key: jax.Array) -> jax.Array:
+    if config.x_amplitude < 0:
+        raise ValueError("x_amplitude must be nonnegative")
+    if config.x_missing_period <= 0:
+        raise ValueError("x_missing_period must be positive")
 
     time = jnp.arange(config.time_steps, dtype=jnp.float64)
+    if config.x_pattern == "sinusoidal":
+        x_single = _sinusoidal_x(config, time)
+        return jnp.broadcast_to(x_single, (config.batch_size, config.time_steps))
+    if config.x_pattern == "weak_sinusoidal":
+        x_single = 0.25 * _sinusoidal_x(config, time)
+        return jnp.broadcast_to(x_single, (config.batch_size, config.time_steps))
+    if config.x_pattern == "intermittent_sinusoidal":
+        x_single = _sinusoidal_x(config, time)
+        observed = (jnp.arange(config.time_steps) % config.x_missing_period) == 0
+        return jnp.broadcast_to(
+            jnp.where(observed, x_single, 0.0), (config.batch_size, config.time_steps)
+        )
+    if config.x_pattern == "constant":
+        return jnp.full(
+            (config.batch_size, config.time_steps),
+            config.x_constant,
+            dtype=jnp.float64,
+        )
+    if config.x_pattern == "zero":
+        return jnp.zeros((config.batch_size, config.time_steps), dtype=jnp.float64)
+    if config.x_pattern == "random_normal":
+        return config.x_amplitude * jax.random.normal(
+            key,
+            shape=(config.batch_size, config.time_steps),
+            dtype=jnp.float64,
+        )
+    if config.x_pattern == "random_uniform":
+        return config.x_amplitude * jax.random.uniform(
+            key,
+            shape=(config.batch_size, config.time_steps),
+            dtype=jnp.float64,
+            minval=-1.0,
+            maxval=1.0,
+        )
+    raise ValueError(f"Unsupported x_pattern: {config.x_pattern}")
+
+
+def _sinusoidal_x(config: LinearGaussianDataConfig, time: jax.Array) -> jax.Array:
     phase = 2.0 * jnp.pi * config.x_cycles * time / config.time_steps
-    return jnp.sin(phase)
+    return config.x_amplitude * jnp.sin(phase)

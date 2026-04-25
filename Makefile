@@ -16,8 +16,18 @@ EDGE_REGULARIZER_DIR ?= outputs/linear_gaussian_edge_regularizer
 EDGE_REGULARIZER_WEIGHTS ?= 0,0.01,0.05,0.1
 TRANSITION_CONSISTENCY_DIR ?= outputs/linear_gaussian_transition_consistency
 TRANSITION_CONSISTENCY_WEIGHTS ?= 0,0.01,0.05,0.1
+DIAGNOSTIC_BASELINES_DIR ?= outputs/linear_gaussian_diagnostic_baselines
+OBJECTIVE_BUDGET_DIR ?= outputs/linear_gaussian_objective_budget
+OBJECTIVE_BUDGET_STEPS ?= 250,1000,3000
+PREDICTIVE_HEAD_CONFIG ?= experiments/linear_gaussian/06_predictive_head.yaml
+PREDICTIVE_HEAD_DIR ?= outputs/linear_gaussian_predictive_head
+PREDICTIVE_HEAD_SWEEP_DIR ?= outputs/linear_gaussian_predictive_head_sweep
+SELF_FED_SWEEP_DIR ?= outputs/linear_gaussian_self_fed_supervised
+SELF_FED_VARIANCE_DIR ?= outputs/linear_gaussian_self_fed_variance_regularizer
+SELF_FED_VARIANCE_WEIGHTS ?= 0,0.1,1,10
+SELF_FED_VARIANCE_STEPS ?= 3000
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -37,6 +47,12 @@ help:
 	@printf "  sweep-elbo-ablation Run ELBO MC-sample/training-budget ablation\n"
 	@printf "  sweep-edge-regularizer Run diagnostic oracle edge-KL regularizer sweep\n"
 	@printf "  sweep-transition-consistency Run unsupervised transition regularizer sweep\n"
+	@printf "  sweep-diagnostic-baselines Run zero/frozen/split-head diagnostic baselines\n"
+	@printf "  sweep-objective-budget Run matched-budget supervised-vs-ELBO sweep\n"
+	@printf "  train-predictive-head Train one-step predictive head\n"
+	@printf "  sweep-predictive-head Run predictive-head seed sweep\n"
+	@printf "  sweep-self-fed-supervised Run teacher-forced/self-fed/ELBO sweep\n"
+	@printf "  sweep-self-fed-variance Run self-fed variance-ratio regularizer sweep\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -87,6 +103,24 @@ sweep-edge-regularizer:
 
 sweep-transition-consistency:
 	$(UV) run python scripts/sweep_transition_consistency.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(TRANSITION_CONSISTENCY_WEIGHTS) --output-dir $(TRANSITION_CONSISTENCY_DIR)
+
+sweep-diagnostic-baselines:
+	$(UV) run python scripts/sweep_diagnostic_baselines.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(DIAGNOSTIC_BASELINES_DIR)
+
+sweep-objective-budget:
+	$(UV) run python scripts/sweep_objective_budget.py --seeds $(LINEAR_SWEEP_SEEDS) --steps $(OBJECTIVE_BUDGET_STEPS) --output-dir $(OBJECTIVE_BUDGET_DIR)
+
+train-predictive-head:
+	$(UV) run python scripts/train_predictive_head.py --config $(PREDICTIVE_HEAD_CONFIG)
+
+sweep-predictive-head:
+	$(UV) run python scripts/sweep_predictive_head.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(PREDICTIVE_HEAD_SWEEP_DIR)
+
+sweep-self-fed-supervised:
+	$(UV) run python scripts/sweep_self_fed_supervised.py --seeds $(LINEAR_SWEEP_SEEDS) --steps $(OBJECTIVE_BUDGET_STEPS) --output-dir $(SELF_FED_SWEEP_DIR)
+
+sweep-self-fed-variance:
+	$(UV) run python scripts/sweep_self_fed_variance_regularizer.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(SELF_FED_VARIANCE_WEIGHTS) --steps $(SELF_FED_VARIANCE_STEPS) --output-dir $(SELF_FED_VARIANCE_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)

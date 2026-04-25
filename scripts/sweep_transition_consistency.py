@@ -57,7 +57,9 @@ def main() -> None:
         for seed in seeds:
             weight_label = _weight_label(weight)
             run_dir = output_dir / f"transition_weight_{weight_label}" / f"seed_{seed}"
-            run_config_path = output_dir / "configs" / f"transition_weight_{weight_label}" / f"seed_{seed}.yaml"
+            run_config_path = (
+                output_dir / "configs" / f"transition_weight_{weight_label}" / f"seed_{seed}.yaml"
+            )
             config = _make_config(
                 base_config,
                 seed=seed,

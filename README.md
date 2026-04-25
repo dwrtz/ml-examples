@@ -46,7 +46,7 @@ uv sync --dev
 make test
 ```
 
-## Planned Commands
+## Common Commands
 
 Run the linear-Gaussian oracle check:
 
@@ -60,16 +60,45 @@ Train the first strict MLP filter:
 make train-linear
 ```
 
+Train the ELBO baseline:
+
+```bash
+make train-linear-elbo
+```
+
+Run the current seed sweeps:
+
+```bash
+make sweep-objective-budget
+make sweep-self-fed-supervised
+make sweep-self-fed-variance
+make sweep-predictive-head
+```
+
 Generate evaluation plots:
 
 ```bash
 make plot-linear RUN_DIR=outputs/<run-name>
 ```
 
-These entry points are scaffolded as part of the repository reorganization. The
-implementation plan in `docs/vbf-modernization/` defines the order in which the
-underlying data generator, Kalman oracle, posterior distributions, losses, and
-models should be filled in.
+## Current Status
+
+The scalar linear-Gaussian benchmark is implemented with:
+
+- exact Kalman filtering and exact two-state edge posterior oracles;
+- a Kalman-structured strict MLP update cell;
+- teacher-forced supervised edge distillation;
+- self-fed supervised edge distillation;
+- edge-local ELBO training;
+- closed-form scalar Gaussian ELBO diagnostics;
+- posterior predictive evaluation and a learned one-step predictive head;
+- calibration metrics, coverage, variance ratios, saved configs, and saved
+  trained parameters.
+
+The current strongest learned linear-Gaussian baseline is the self-fed supervised
+edge objective. The ELBO objective remains the main unsupervised benchmark. The
+implementation plan and progress notes in `docs/vbf-modernization/` track the
+research interpretation and next experiments.
 
 ## Historical Experiment
 

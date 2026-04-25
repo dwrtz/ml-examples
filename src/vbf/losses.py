@@ -187,7 +187,9 @@ def edge_elbo_terms_from_outputs(
 ) -> EdgeElboTerms:
     """Return local edge ELBO terms from structured MLP outputs."""
 
-    prev_filter_mean, prev_filter_var = previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
+    prev_filter_mean, prev_filter_var = previous_filter_beliefs(
+        outputs.filter_mean, outputs.filter_var, state_params
+    )
     return edge_elbo_terms_from_factors(
         batch,
         state_params,
@@ -351,7 +353,13 @@ def edge_elbo_terms_from_factors(
 
     neg_log_current_filter = -log_current_filter
     neg_log_backward = -log_backward
-    elbo = log_likelihood + log_transition + log_prev_filter + neg_log_current_filter + neg_log_backward
+    elbo = (
+        log_likelihood
+        + log_transition
+        + log_prev_filter
+        + neg_log_current_filter
+        + neg_log_backward
+    )
 
     return EdgeElboTerms(
         log_likelihood=jnp.mean(log_likelihood, axis=0),
@@ -430,9 +438,13 @@ def gaussian_kl(
     logdet_p = jnp.linalg.slogdet(cov_p)[1]
     logdet_q = jnp.linalg.slogdet(cov_q)[1]
     return 0.5 * (logdet_q - logdet_p - 2.0 + trace_term + quad_term)
+
+
 def _normal_log_prob(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
 
 
-def _expected_normal_log_prob(expected_squared_error: jax.Array, var: jax.Array | float) -> jax.Array:
+def _expected_normal_log_prob(
+    expected_squared_error: jax.Array, var: jax.Array | float
+) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + expected_squared_error / var)

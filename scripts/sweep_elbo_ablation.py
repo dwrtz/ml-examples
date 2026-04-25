@@ -70,7 +70,11 @@ def main() -> None:
             for seed in seeds:
                 run_dir = output_dir / f"steps_{steps}" / f"samples_{num_samples}" / f"seed_{seed}"
                 run_config_path = (
-                    output_dir / "configs" / f"steps_{steps}" / f"samples_{num_samples}" / f"seed_{seed}.yaml"
+                    output_dir
+                    / "configs"
+                    / f"steps_{steps}"
+                    / f"samples_{num_samples}"
+                    / f"seed_{seed}.yaml"
                 )
                 config = _make_config(
                     base_config,

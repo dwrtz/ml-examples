@@ -12,7 +12,12 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from vbf.data import EpisodeBatch, LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
+from vbf.data import (
+    EpisodeBatch,
+    LinearGaussianDataConfig,
+    LinearGaussianParams,
+    make_linear_gaussian_batch,
+)
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import (
     EdgeElboTerms,
@@ -93,7 +98,11 @@ def main() -> None:
     opt_state = init_adam(params)
 
     def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
-        if objective in {"supervised_edge_mlp", "zero_init_edge_mlp", "frozen_marginal_backward_mlp"}:
+        if objective in {
+            "supervised_edge_mlp",
+            "zero_init_edge_mlp",
+            "frozen_marginal_backward_mlp",
+        }:
             return supervised_edge_kl_loss(
                 current_params,
                 train_batch,
@@ -156,7 +165,9 @@ def main() -> None:
         outputs.filter_mean,
         outputs.filter_var,
     )
-    edge_kl_bt = gaussian_kl(eval_oracle.edge_mean, eval_oracle.edge_cov, pred_edge_mean, pred_edge_cov)
+    edge_kl_bt = gaussian_kl(
+        eval_oracle.edge_mean, eval_oracle.edge_cov, pred_edge_mean, pred_edge_cov
+    )
     state_rmse_t = rmse_over_batch(outputs.filter_mean, eval_batch.z)
     oracle_state_rmse_t = rmse_over_batch(eval_oracle.filter_mean, eval_batch.z)
     filter_kl_t = mean_over_batch(filter_kl_bt)
@@ -253,7 +264,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_loss_history(output_dir / "loss_history.csv", history)
     _write_config(output_dir / "config.yaml", config)
-    np.savez(output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()})
+    np.savez(
+        output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
+    )
     metrics = {
         "objective": objective,
         "train_batch_size": data_config.batch_size,
@@ -330,7 +343,9 @@ def main() -> None:
         "oracle_predictive_nll_over_time": np.asarray(mean_over_batch(oracle_predictive_nll_bt)),
         "oracle_predictive_rmse_over_time": np.asarray(oracle_predictive_rmse_t),
         "mean_filter_variance_over_time": np.asarray(mean_over_batch(outputs.filter_var)),
-        "oracle_mean_filter_variance_over_time": np.asarray(mean_over_batch(eval_oracle.filter_var)),
+        "oracle_mean_filter_variance_over_time": np.asarray(
+            mean_over_batch(eval_oracle.filter_var)
+        ),
         "variance_ratio_over_time": np.asarray(
             mean_over_batch(outputs.filter_var) / mean_over_batch(eval_oracle.filter_var)
         ),
@@ -478,9 +493,7 @@ def _coverage_metrics(
         "95": 1.959963984540054,
     }
     return {
-        f"{prefix}_{level}": float(
-            gaussian_interval_coverage(value, mean, var, z_score=z_score)
-        )
+        f"{prefix}_{level}": float(gaussian_interval_coverage(value, mean, var, z_score=z_score))
         for level, z_score in z_scores.items()
     }
 

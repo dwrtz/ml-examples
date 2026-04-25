@@ -2,3 +2,25 @@ name: linear_gaussian_weak_observability
 benchmark: linear_gaussian
 suite: weak_observability
 
+# Suite placeholder for upcoming sweep scripts. Each entry maps to
+# `LinearGaussianDataConfig.x_pattern` and optional pattern-specific fields.
+patterns:
+  - name: sinusoidal_reference
+    data:
+      x_pattern: sinusoidal
+      x_amplitude: 1.0
+  - name: weak_sinusoidal
+    data:
+      x_pattern: weak_sinusoidal
+      x_amplitude: 1.0
+  - name: intermittent_sinusoidal
+    data:
+      x_pattern: intermittent_sinusoidal
+      x_missing_period: 4
+  - name: zero_unobservable
+    data:
+      x_pattern: zero
+  - name: random_normal
+    data:
+      x_pattern: random_normal
+      x_amplitude: 1.0

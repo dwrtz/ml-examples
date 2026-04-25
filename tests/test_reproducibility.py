@@ -29,6 +29,56 @@ def test_linear_gaussian_batch_shapes() -> None:
     assert batch.z.shape == (5, 9)
 
 
+def test_linear_gaussian_x_patterns() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+
+    zero = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=2, time_steps=6, x_pattern="zero"),
+        params,
+        seed=123,
+    )
+    constant = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(
+            batch_size=2,
+            time_steps=6,
+            x_pattern="constant",
+            x_constant=0.3,
+        ),
+        params,
+        seed=123,
+    )
+    intermittent = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(
+            batch_size=2,
+            time_steps=8,
+            x_pattern="intermittent_sinusoidal",
+            x_missing_period=3,
+        ),
+        params,
+        seed=123,
+    )
+
+    np.testing.assert_array_equal(np.asarray(zero.x), np.zeros((2, 6)))
+    np.testing.assert_array_equal(np.asarray(constant.x), np.full((2, 6), 0.3))
+    np.testing.assert_array_equal(np.asarray(intermittent.x[:, 1::3]), np.zeros((2, 3)))
+
+
+def test_random_linear_gaussian_x_pattern_reproducible_for_seed() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    data_config = LinearGaussianDataConfig(
+        batch_size=2,
+        time_steps=6,
+        x_pattern="random_normal",
+    )
+
+    first = make_linear_gaussian_batch(data_config, params, seed=123)
+    second = make_linear_gaussian_batch(data_config, params, seed=123)
+    different = make_linear_gaussian_batch(data_config, params, seed=124)
+
+    np.testing.assert_array_equal(np.asarray(first.x), np.asarray(second.x))
+    assert not np.array_equal(np.asarray(first.x), np.asarray(different.x))
+
+
 def test_rmse_over_batch_shape() -> None:
     pred = np.array([[1.0, 2.0], [3.0, 4.0]])
     target = np.array([[1.0, 1.0], [1.0, 2.0]])

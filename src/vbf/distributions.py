@@ -112,7 +112,9 @@ class GaussianEdgePosterior:
     def log_prob(self, z_t: jax.Array, z_tm1: jax.Array) -> jax.Array:
         return self.q_filter.log_prob(z_t) + self.q_backward.log_prob(z_tm1, z_t)
 
-    def sample(self, key: jax.Array, sample_shape: tuple[int, ...] = ()) -> tuple[jax.Array, jax.Array]:
+    def sample(
+        self, key: jax.Array, sample_shape: tuple[int, ...] = ()
+    ) -> tuple[jax.Array, jax.Array]:
         key_z_t, key_z_tm1 = jax.random.split(key)
         z_t = self.q_filter.sample(key_z_t, sample_shape=sample_shape)
         z_tm1 = self.q_backward.sample(key_z_tm1, z_t)

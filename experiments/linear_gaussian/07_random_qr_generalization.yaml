@@ -2,3 +2,10 @@ name: linear_gaussian_random_qr_generalization
 benchmark: linear_gaussian
 suite: random_qr_generalization
 
+# Suite placeholder for upcoming train/eval scripts. The intended use is to
+# sweep these q/r values by overriding `state_space` in an existing baseline
+# config, then evaluate on held-out q/r combinations.
+train_q_values: [0.03, 0.1, 0.3]
+train_r_values: [0.03, 0.1, 0.3]
+eval_q_values: [0.02, 0.05, 0.2, 0.5]
+eval_r_values: [0.02, 0.05, 0.2, 0.5]

@@ -12,7 +12,12 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from vbf.data import EpisodeBatch, LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
+from vbf.data import (
+    EpisodeBatch,
+    LinearGaussianDataConfig,
+    LinearGaussianParams,
+    make_linear_gaussian_batch,
+)
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.metrics import rmse_global, rmse_over_batch, scalar_gaussian_nll
 from vbf.models.heads import init_predictive_mlp_params, run_predictive_mlp_head
@@ -120,8 +125,12 @@ def main() -> None:
     output_dir = Path(config.get("output_dir", "outputs/linear_gaussian_predictive_head"))
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_loss_history(output_dir / "loss_history.csv", history)
-    (output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    np.savez(output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()})
+    (output_dir / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
+    np.savez(
+        output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
+    )
     metrics = {
         "objective": "predictive_head",
         "train_batch_size": data_config.batch_size,
@@ -205,7 +214,9 @@ def _evaluate_on_learned_filter_diagnostics(
         exact_predictive_mean = jnp.asarray(diagnostics["oracle_predictive_mean"])
         exact_predictive_var = jnp.asarray(diagnostics["oracle_predictive_var"])
 
-    prev_mean, prev_var = previous_filter_beliefs(learned_filter_mean, learned_filter_var, state_params)
+    prev_mean, prev_var = previous_filter_beliefs(
+        learned_filter_mean, learned_filter_var, state_params
+    )
     head_outputs = run_predictive_mlp_head(
         params,
         prev_mean,

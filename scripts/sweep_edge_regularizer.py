@@ -57,7 +57,9 @@ def main() -> None:
         for seed in seeds:
             weight_label = _weight_label(weight)
             run_dir = output_dir / f"edge_kl_weight_{weight_label}" / f"seed_{seed}"
-            run_config_path = output_dir / "configs" / f"edge_kl_weight_{weight_label}" / f"seed_{seed}.yaml"
+            run_config_path = (
+                output_dir / "configs" / f"edge_kl_weight_{weight_label}" / f"seed_{seed}.yaml"
+            )
             config = _make_config(base_config, seed=seed, edge_kl_weight=weight, output_dir=run_dir)
             _write_config(run_config_path, config)
             if not args.skip_train:

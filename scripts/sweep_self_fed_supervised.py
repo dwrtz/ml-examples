@@ -41,7 +41,9 @@ def main() -> None:
         "--self-fed-config",
         default="experiments/linear_gaussian/12_self_fed_supervised_edge_mlp.yaml",
     )
-    parser.add_argument("--elbo-config", default="experiments/linear_gaussian/02_elbo_edge_mlp.yaml")
+    parser.add_argument(
+        "--elbo-config", default="experiments/linear_gaussian/02_elbo_edge_mlp.yaml"
+    )
     parser.add_argument("--seeds", default="321,322,323,324,325")
     parser.add_argument("--steps", default="250,1000,3000")
     parser.add_argument("--num-elbo-samples", type=int, default=32)

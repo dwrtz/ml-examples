@@ -107,7 +107,9 @@ def _plot_metrics_over_time(data: dict[str, np.ndarray], path: Path) -> None:
     time = np.arange(data["filter_kl_over_time"].shape[0])
     has_predictive = "predictive_nll_over_time" in data
     num_axes = 4 if has_predictive else 3
-    fig, axes = plt.subplots(num_axes, 1, figsize=(10, 10 if has_predictive else 8), sharex=True, constrained_layout=True)
+    fig, axes = plt.subplots(
+        num_axes, 1, figsize=(10, 10 if has_predictive else 8), sharex=True, constrained_layout=True
+    )
     axes[0].plot(time, data["edge_kl_over_time"], color="tab:orange")
     axes[0].set_ylabel("edge KL")
     axes[1].plot(time, data["filter_kl_over_time"], color="tab:purple")
