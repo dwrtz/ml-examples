@@ -75,6 +75,7 @@ def main() -> None:
     min_var = float(training_config.get("min_var", 1e-6))
     edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
     transition_consistency_weight = float(training_config.get("transition_consistency_weight", 0.0))
+    variance_ratio_weight = float(training_config.get("variance_ratio_weight", 0.0))
     objective = config["model"]
     if objective == "zero_init_edge_mlp" and int(training_config["steps"]) != 0:
         raise ValueError("zero_init_edge_mlp must use training.steps: 0")
@@ -107,6 +108,7 @@ def main() -> None:
                 state_params,
                 train_oracle,
                 min_var=min_var,
+                variance_ratio_weight=variance_ratio_weight,
             )
         if objective == "supervised_edge_split_mlp":
             return _supervised_split_head_edge_kl_loss(
@@ -264,6 +266,7 @@ def main() -> None:
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 0)),
         "edge_kl_weight": edge_kl_weight,
         "transition_consistency_weight": transition_consistency_weight,
+        "variance_ratio_weight": variance_ratio_weight,
         "final_loss": final_loss,
         "final_edge_kl": float(jnp.mean(edge_kl_bt)),
         "filter_kl": filter_kl,
@@ -326,6 +329,18 @@ def main() -> None:
         "predictive_rmse_over_time": np.asarray(predictive_rmse_t),
         "oracle_predictive_nll_over_time": np.asarray(mean_over_batch(oracle_predictive_nll_bt)),
         "oracle_predictive_rmse_over_time": np.asarray(oracle_predictive_rmse_t),
+        "mean_filter_variance_over_time": np.asarray(mean_over_batch(outputs.filter_var)),
+        "oracle_mean_filter_variance_over_time": np.asarray(mean_over_batch(eval_oracle.filter_var)),
+        "variance_ratio_over_time": np.asarray(
+            mean_over_batch(outputs.filter_var) / mean_over_batch(eval_oracle.filter_var)
+        ),
+        **_coverage_time_series(eval_batch.z, outputs.filter_mean, outputs.filter_var, "coverage"),
+        **_coverage_time_series(
+            eval_batch.z,
+            eval_oracle.filter_mean,
+            eval_oracle.filter_var,
+            "oracle_coverage",
+        ),
         "loss_history_step": np.asarray([step for step, _ in history], dtype=np.int64),
         "loss_history_loss": np.asarray([loss for _, loss in history], dtype=np.float64),
     }
@@ -468,6 +483,25 @@ def _coverage_metrics(
         )
         for level, z_score in z_scores.items()
     }
+
+
+def _coverage_time_series(
+    value: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    prefix: str,
+) -> dict[str, np.ndarray]:
+    z_scores = {
+        "50": 0.6744897501960817,
+        "90": 1.6448536269514722,
+        "95": 1.959963984540054,
+    }
+    metrics = {}
+    for level, z_score in z_scores.items():
+        half_width = z_score * jnp.sqrt(var)
+        covered = (value >= mean - half_width) & (value <= mean + half_width)
+        metrics[f"{prefix}_{level}_over_time"] = np.asarray(jnp.mean(covered, axis=0))
+    return metrics
 
 
 def _init_model_params(

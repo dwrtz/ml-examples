@@ -69,6 +69,7 @@ def self_fed_supervised_edge_kl_loss(
     oracle: EdgeOracleOutputs,
     *,
     min_var: float = 1e-6,
+    variance_ratio_weight: float = 0.0,
 ) -> jax.Array:
     """Mean rollout `KL(q_oracle_edge || q_learned_edge)`.
 
@@ -79,7 +80,23 @@ def self_fed_supervised_edge_kl_loss(
     outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
     pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
     kl = gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov)
-    return jnp.mean(kl)
+    loss = jnp.mean(kl)
+    if variance_ratio_weight != 0.0:
+        loss = loss + variance_ratio_weight * filter_variance_ratio_penalty(
+            outputs.filter_var,
+            oracle.filter_var,
+        )
+    return loss
+
+
+def filter_variance_ratio_penalty(
+    filter_var: jax.Array,
+    oracle_filter_var: jax.Array,
+) -> jax.Array:
+    """Squared log-ratio penalty for mean filtering variance calibration."""
+
+    ratio = jnp.mean(filter_var) / jnp.mean(oracle_filter_var)
+    return jnp.log(ratio) ** 2
 
 
 def edge_elbo_loss(

@@ -290,3 +290,59 @@ Interpretation:
 Next useful experiment: add a calibrated/self-fed supervised objective variant
 or variance regularizer that targets variance ratio and NLL without degrading
 edge KL.
+
+## 9. Self-fed variance calibration sweep
+
+Time-resolved calibration diagnostics are now saved for linear-Gaussian runs:
+
+```text
+variance_ratio_over_time
+mean_filter_variance_over_time
+oracle_mean_filter_variance_over_time
+coverage_50_over_time
+coverage_90_over_time
+coverage_95_over_time
+```
+
+A global filtering-variance ratio regularizer was added for self-fed supervised
+training:
+
+```text
+loss = edge_KL + lambda * log(mean(q_var) / mean(oracle_var))^2
+```
+
+Sweep script:
+
+```text
+scripts/sweep_self_fed_variance_regularizer.py
+```
+
+The first requested small-weight sweep (`0, 0.001, 0.01, 0.05, 0.1`) initially
+showed no effect because the regularizer weight was accidentally not passed into
+the self-fed branch. After fixing the wiring, an effective sweep was run to:
+
+```text
+outputs/linear_gaussian_self_fed_variance_regularizer_fixed/
+```
+
+Summary:
+
+| lambda | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
+| 0.1 | 0.012900 | 0.051457 | 0.552749 | 0.415025 | 0.898189 | 1.013291 | 0.607679 | -0.679857 |
+| 1 | 0.014044 | 0.054504 | 0.553757 | 0.416383 | 0.897880 | 0.999278 | 0.608232 | -0.683403 |
+| 10 | 0.013349 | 0.053560 | 0.550709 | 0.415677 | 0.897091 | 1.000108 | 0.608097 | -0.679481 |
+
+Interpretation:
+
+- The global variance regularizer successfully corrects the self-fed variance
+  ratio from `1.26` to near `1.0`.
+- `lambda=0.1` is the best current tradeoff: it improves variance ratio,
+  filter KL, edge KL, global RMSE, predictive NLL, and closed-form ELBO
+  relative to no regularizer.
+- Coverage remains near 90% and changes only slightly, which suggests aggregate
+  variance ratio alone is not the full calibration story.
+- The next calibration step should inspect `coverage_*_over_time` and
+  `variance_ratio_over_time`; if miscalibration is time-local, move from global
+  variance regularization to per-time calibration penalties.

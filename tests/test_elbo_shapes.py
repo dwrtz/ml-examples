@@ -9,6 +9,7 @@ from vbf.losses import (
     edge_elbo_closed_form_terms_from_outputs,
     edge_elbo_loss,
     edge_elbo_terms,
+    filter_variance_ratio_penalty,
     oracle_edge_elbo_closed_form_terms,
     oracle_edge_elbo_terms,
     supervised_edge_kl_loss,
@@ -180,6 +181,15 @@ def test_transition_consistency_penalty_is_scalar() -> None:
     penalty = transition_consistency_penalty(outputs, state_params)
 
     assert penalty.shape == ()
+
+
+def test_filter_variance_ratio_penalty() -> None:
+    filter_var = jax.numpy.array([2.0, 2.0])
+    oracle_var = jax.numpy.array([1.0, 1.0])
+
+    penalty = filter_variance_ratio_penalty(filter_var, oracle_var)
+
+    np.testing.assert_allclose(float(penalty), float(jax.numpy.log(2.0) ** 2))
 
 
 def test_structured_mlp_teacher_forced_shapes() -> None:
