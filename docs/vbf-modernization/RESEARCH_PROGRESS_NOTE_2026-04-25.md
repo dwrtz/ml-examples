@@ -139,5 +139,40 @@ Interpretation:
 - The separate-hidden-tower split-head supervised baseline is currently worse
   than the original shared-hidden supervised MLP at the same 250-step budget.
 
-After those baselines are in place, the learned predictive head remains the next
-natural modernization milestone.
+## 6. Predictive head milestone
+
+The learned one-step predictive head has been added:
+
+```text
+scripts/train_predictive_head.py
+experiments/linear_gaussian/06_predictive_head.yaml
+src/vbf/models/heads.py
+```
+
+The head predicts a Gaussian distribution for `y_t` from only:
+
+```text
+q^F_{t-1}.mean, q^F_{t-1}.var, x_t, Q, R
+```
+
+The current observation `y_t` is used only as the training target. No-leakage
+tests cover both feature construction and output invariance under changes to
+current `y_t`.
+
+The first standard seed run was written to:
+
+```text
+outputs/linear_gaussian_predictive_head/
+```
+
+Result:
+
+| Predictor | predictive NLL | predictive RMSE | variance ratio |
+|---|---:|---:|---:|
+| learned predictive head | 0.599251 | 0.452217 | 0.990911 |
+| exact Kalman predictive | 0.595622 | 0.451505 | 1.000000 |
+
+The head stays close to the exact predictive reference in the scalar
+linear-Gaussian case. The next useful extension is to evaluate this head from a
+learned filter's carried `q^F_{t-1}` rather than only the oracle/Kalman belief,
+then run a multi-seed predictive sweep.
