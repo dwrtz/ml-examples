@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import jax
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -22,7 +23,7 @@ class GaussianBelief:
     var: jax.Array
 
     def __post_init__(self) -> None:
-        _assert_positive("var", self.var)
+        _validate_static_positive("var", self.var)
 
     @property
     def std(self) -> jax.Array:
@@ -45,7 +46,7 @@ class ConditionalGaussianBackward:
     var: jax.Array
 
     def __post_init__(self) -> None:
-        _assert_positive("var", self.var)
+        _validate_static_positive("var", self.var)
 
     @property
     def std(self) -> jax.Array:
@@ -138,6 +139,16 @@ def _normal_log_prob(value: jax.Array, mean: jax.Array, var: jax.Array) -> jax.A
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
 
 
-def _assert_positive(name: str, value: jax.Array) -> None:
-    if bool(jnp.any(value <= 0)):
+def _validate_static_positive(name: str, value: jax.Array) -> None:
+    """Validate host-known arrays without forcing a Python bool on tracers."""
+
+    try:
+        value_np = np.asarray(jax.device_get(value))
+    except Exception:
+        return
+    if value_np.shape == ():
+        if float(value_np) <= 0.0:
+            raise ValueError(f"{name} must be positive")
+        return
+    if bool(np.any(value_np <= 0)):
         raise ValueError(f"{name} must be positive")

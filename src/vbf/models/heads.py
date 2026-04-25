@@ -84,6 +84,26 @@ def run_predictive_mlp_head(
     )
 
 
+def run_direct_predictive_mlp_head(
+    params: dict[str, jax.Array],
+    prev_filter_mean: jax.Array,
+    prev_filter_var: jax.Array,
+    x_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-6,
+) -> PredictiveHeadOutputs:
+    """Predict `y_t` directly without an analytic predictive baseline."""
+
+    features = predictive_head_features(prev_filter_mean, prev_filter_var, x_t, state_params)
+    hidden = jnp.tanh(features @ params["w1"] + params["b1"])
+    raw = hidden @ params["w2"] + params["b2"]
+    return PredictiveHeadOutputs(
+        mean=raw[..., 0],
+        var=jax.nn.softplus(raw[..., 1]) + min_var,
+    )
+
+
 def _analytic_predictive(
     prev_filter_mean: jax.Array,
     prev_filter_var: jax.Array,

@@ -24,6 +24,12 @@ This gives the project a clean path from exact linear-Gaussian debugging to
 learned variational filters, posterior predictive heads, recurrent context
 models, and nonlinear observation models.
 
+The current strict MLP filter should be interpreted precisely: it is a
+Kalman-structured marginal update with learned corrections and a learned
+backward conditional, not a generic neural filter learned entirely from
+scratch. Less-structured direct MLP ablations are included for claims about
+learning the filtering recursion itself.
+
 ## Repository Layout
 
 ```text
@@ -90,8 +96,11 @@ The scalar linear-Gaussian benchmark is implemented with:
 - teacher-forced supervised edge distillation;
 - self-fed supervised edge distillation;
 - edge-local ELBO training;
+- closed-form scalar Gaussian ELBO training;
 - closed-form scalar Gaussian ELBO diagnostics;
-- posterior predictive evaluation and a learned one-step predictive head;
+- posterior predictive evaluation with analytic-residual and direct learned
+  one-step predictive heads;
+- direct, less-structured MLP filter ablations;
 - calibration metrics, coverage, variance ratios, saved configs, and saved
   trained parameters.
 

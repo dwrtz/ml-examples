@@ -7,6 +7,7 @@ from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import (
     edge_elbo_closed_form_terms_from_outputs,
+    edge_elbo_closed_form_loss,
     edge_elbo_loss,
     edge_elbo_terms,
     filter_variance_ratio_penalty,
@@ -17,8 +18,11 @@ from vbf.losses import (
 )
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
+    init_direct_mlp_params,
     init_split_head_mlp_params,
     init_structured_mlp_params,
+    run_direct_mlp_filter,
+    run_direct_mlp_teacher_forced,
     run_split_head_mlp_filter,
     run_split_head_mlp_teacher_forced,
     run_structured_mlp_filter,
@@ -73,6 +77,41 @@ def test_edge_elbo_loss_is_scalar() -> None:
         jax.random.PRNGKey(1),
         num_samples=4,
     )
+
+    assert loss.shape == ()
+
+
+def test_direct_edge_elbo_loss_is_scalar() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=151,
+    )
+    mlp_params = init_direct_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    loss = edge_elbo_loss(
+        mlp_params,
+        batch,
+        state_params,
+        jax.random.PRNGKey(1),
+        num_samples=4,
+        direct=True,
+    )
+
+    assert loss.shape == ()
+
+
+def test_closed_form_edge_elbo_loss_is_scalar() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=152,
+    )
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    loss = edge_elbo_closed_form_loss(mlp_params, batch, state_params)
 
     assert loss.shape == ()
 
@@ -226,6 +265,31 @@ def test_split_head_mlp_filter_shapes() -> None:
 
     rollout_outputs = run_split_head_mlp_filter(mlp_params, batch, state_params)
     teacher_outputs = run_split_head_mlp_teacher_forced(
+        mlp_params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+    )
+
+    assert rollout_outputs.filter_mean.shape == (3, 5)
+    assert rollout_outputs.filter_var.shape == (3, 5)
+    assert teacher_outputs.filter_mean.shape == (3, 5)
+    assert teacher_outputs.backward_var.shape == (3, 5)
+
+
+def test_direct_mlp_filter_shapes() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=22,
+    )
+    oracle = kalman_edge_posterior_scalar(batch, state_params)
+    mlp_params = init_direct_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    rollout_outputs = run_direct_mlp_filter(mlp_params, batch, state_params)
+    teacher_outputs = run_direct_mlp_teacher_forced(
         mlp_params,
         batch,
         state_params,

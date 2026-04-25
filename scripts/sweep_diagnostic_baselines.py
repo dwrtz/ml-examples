@@ -18,6 +18,7 @@ import yaml
 @dataclass(frozen=True)
 class Row:
     seed: int
+    steps: int
     model: str
     objective: str
     filter_kl: float
@@ -32,11 +33,13 @@ class Row:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", default="321,322,323,324,325")
+    parser.add_argument("--steps", default="250")
     parser.add_argument("--output-dir", default="outputs/linear_gaussian_diagnostic_baselines")
     parser.add_argument("--skip-train", action="store_true")
     args = parser.parse_args()
 
     seeds = _parse_seeds(args.seeds)
+    steps_values = _parse_steps(args.steps)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,14 +59,19 @@ def main() -> None:
     for label, config_path in run_specs:
         base_config = _read_config(config_path)
         objective = str(base_config["model"])
-        for seed in seeds:
-            run_dir = output_dir / objective / f"seed_{seed}"
-            run_config_path = output_dir / "configs" / objective / f"seed_{seed}.yaml"
-            config = {**base_config, "seed": seed, "output_dir": str(run_dir)}
-            _write_config(run_config_path, config)
-            if not args.skip_train:
-                _run_training(run_config_path)
-            rows.append(_load_run(run_dir, seed=seed, model=label))
+        model_steps = [0] if objective == "zero_init_edge_mlp" else steps_values
+        for steps in model_steps:
+            for seed in seeds:
+                run_dir = output_dir / objective / f"steps_{steps}" / f"seed_{seed}"
+                run_config_path = (
+                    output_dir / "configs" / objective / f"steps_{steps}" / f"seed_{seed}.yaml"
+                )
+                config = {**base_config, "seed": seed, "output_dir": str(run_dir)}
+                config["training"] = {**config["training"], "steps": steps}
+                _write_config(run_config_path, config)
+                if not args.skip_train:
+                    _run_training(run_config_path)
+                rows.append(_load_run(run_dir, seed=seed, steps=steps, model=label))
 
     _write_csv(output_dir / "metrics.csv", rows)
     summary = _aggregate(rows)
@@ -83,6 +91,15 @@ def _parse_seeds(value: str) -> list[int]:
     return seeds
 
 
+def _parse_steps(value: str) -> list[int]:
+    steps = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not steps:
+        raise ValueError("--steps must include at least one integer step count")
+    if any(step < 0 for step in steps):
+        raise ValueError("--steps values must be nonnegative")
+    return steps
+
+
 def _read_config(path: Path) -> dict[str, Any]:
     with path.open() as stream:
         return yaml.safe_load(stream)
@@ -100,7 +117,7 @@ def _run_training(config_path: Path) -> None:
     )
 
 
-def _load_run(run_dir: Path, *, seed: int, model: str) -> Row:
+def _load_run(run_dir: Path, *, seed: int, steps: int, model: str) -> Row:
     metrics_path = run_dir / "metrics.json"
     if not metrics_path.exists():
         raise FileNotFoundError(f"Missing metrics file: {metrics_path}")
@@ -108,6 +125,7 @@ def _load_run(run_dir: Path, *, seed: int, model: str) -> Row:
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     return Row(
         seed=seed,
+        steps=steps,
         model=model,
         objective=str(metrics["objective"]),
         filter_kl=float(metrics["filter_kl"]),
@@ -130,9 +148,15 @@ def _write_csv(path: Path, rows: list[Row]) -> None:
 
 def _aggregate(rows: list[Row]) -> dict[str, dict[str, float | str | int]]:
     summary: dict[str, dict[str, float | str | int]] = {}
-    for key in sorted({row.objective for row in rows}):
-        grouped = [row for row in rows if row.objective == key]
-        summary[key] = {"model": grouped[0].model, "num_seeds": len(grouped)}
+    for objective, steps in sorted({(row.objective, row.steps) for row in rows}):
+        grouped = [row for row in rows if row.objective == objective and row.steps == steps]
+        key = f"{objective}_steps_{steps}"
+        summary[key] = {
+            "model": grouped[0].model,
+            "objective": objective,
+            "steps": steps,
+            "num_seeds": len(grouped),
+        }
         for metric in (
             "filter_kl",
             "edge_kl",
@@ -155,19 +179,18 @@ def _render_report(
     lines = [
         "# Linear-Gaussian Diagnostic Baselines",
         "",
-        "| Model | Objective | Seeds | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Model | Objective | Steps | Seeds | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for objective, metrics in summary.items():
+    for _, metrics in summary.items():
         lines.append(
-            "| {model} | {objective} | {num_seeds} | {filter_kl_mean:.6f} +/- "
+            "| {model} | {objective} | {steps} | {num_seeds} | {filter_kl_mean:.6f} +/- "
             "{filter_kl_std:.6f} | {edge_kl_mean:.6f} +/- {edge_kl_std:.6f} | "
             "{state_rmse_mean:.6f} +/- {state_rmse_std:.6f} | "
             "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
             "{coverage_90_mean:.6f} +/- {coverage_90_std:.6f} | "
             "{variance_ratio_mean:.6f} +/- {variance_ratio_std:.6f} | "
             "{predictive_nll_mean:.6f} +/- {predictive_nll_std:.6f} |".format(
-                objective=objective,
                 **metrics,
             )
         )
@@ -176,13 +199,14 @@ def _render_report(
             "",
             "## Per-Seed Rows",
             "",
-            "| Seed | Model | Objective | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |",
-            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| Seed | Steps | Model | Objective | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL |",
+            "|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
         lines.append(
-            f"| {row.seed} | {row.model} | {row.objective} | {row.filter_kl:.6f} | "
+            f"| {row.seed} | {row.steps} | {row.model} | {row.objective} | "
+            f"{row.filter_kl:.6f} | "
             f"{row.edge_kl:.6f} | {row.state_rmse:.6f} | {row.state_nll:.6f} | "
             f"{row.coverage_90:.6f} | {row.variance_ratio:.6f} | "
             f"{row.predictive_nll:.6f} |"

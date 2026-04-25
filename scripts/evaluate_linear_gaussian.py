@@ -21,7 +21,10 @@ def main() -> None:
         config = yaml.safe_load(stream)
 
     data_config = LinearGaussianDataConfig(**config["data"])
-    params = LinearGaussianParams(**config["model"])
+    params_config = config.get("state_space", config.get("model"))
+    if params_config is None:
+        raise ValueError("Config must include state_space or legacy model parameters")
+    params = LinearGaussianParams(**params_config)
     batch = make_linear_gaussian_batch(data_config, params, seed=config["seed"])
 
     kalman = kalman_filter_scalar(batch, params)

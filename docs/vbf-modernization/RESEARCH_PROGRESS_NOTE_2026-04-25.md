@@ -56,6 +56,20 @@ This is a useful inductive-bias baseline, but the research narrative should say
 "Kalman-structured marginal update with learned edge/backward conditional" until
 zero-update, frozen-marginal, and less-structured baselines are run.
 
+Use the following baseline taxonomy in reports:
+
+| Category | Examples | Interpretation |
+|---|---|---|
+| Exact oracle | Kalman + exact edge posterior | Gold reference. |
+| Analytic-marginal controls | zero-init, frozen-marginal backward MLP | Tests backward/edge learning, not learned filtering. |
+| Residualized learned filters | self-fed supervised, ELBO MLP, closed-form ELBO MLP | Learns corrections and edge posteriors around a Kalman-structured marginal. |
+| Less-structured learned filters | direct MLP filter ablations | Tests whether the filtering recursion can be learned with less analytic structure. |
+
+The predictive head has the same distinction. The original head is an
+`analytic_residual_predictive_head`: it adds learned residuals to the analytic
+scalar linear-Gaussian predictive distribution. A `direct_predictive_head`
+ablation is now available for non-residualized prediction.
+
 ## 4. New analytic ELBO diagnostic
 
 For the scalar linear-Gaussian benchmark, the local edge ELBO is now available in
@@ -324,91 +338,17 @@ not Mamba or nonlinear observations yet:
 Mamba and nonlinear observations should remain postponed until the strict-filter
 generalization story is stable.
 
-The five-seed sweep was run to:
+## 11. Implemented director follow-up hooks
 
-```text
-outputs/linear_gaussian_self_fed_supervised/
-```
+The code now includes the experiment hooks needed for the next decision points:
 
-Summary:
-
-| Objective | Steps | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| self-fed supervised | 250 | 0.026810 | 0.191091 | 0.556726 | 0.428692 | 0.898551 | 1.513749 | 0.613313 | -1.010395 |
-| self-fed supervised | 1000 | 0.020340 | 0.096317 | 0.557577 | 0.421941 | 0.899369 | 1.368491 | 0.610837 | -0.771260 |
-| self-fed supervised | 3000 | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
-| ELBO | 3000 | 0.090239 | 0.216081 | 0.558504 | 0.492098 | 0.849060 | 0.662955 | 0.622721 | -0.702407 |
-| teacher-forced supervised | 3000 | 0.120872 | 0.212267 | 0.716988 | 0.521150 | 0.897465 | 1.949102 | 0.670420 | -1.533387 |
-
-Interpretation:
-
-- The main supervised failure was teacher-forcing mismatch. When trained
-  self-fed, supervised edge distillation becomes much stronger than the
-  teacher-forced baseline.
-- At 3000 steps, self-fed supervised beats ELBO on filter KL, edge KL, state
-  NLL, coverage, predictive NLL, and closed-form ELBO.
-- Self-fed supervised is still over-dispersed relative to Kalman
-  (`variance_ratio` about `1.26` at 3000 steps), but much less than
-  teacher-forced supervised.
-- ELBO remains under-dispersed, while self-fed supervised remains
-  over-dispersed. This makes calibration the next central issue.
-
-Next useful experiment: add a calibrated/self-fed supervised objective variant
-or variance regularizer that targets variance ratio and NLL without degrading
-edge KL.
-
-## 9. Self-fed variance calibration sweep
-
-Time-resolved calibration diagnostics are now saved for linear-Gaussian runs:
-
-```text
-variance_ratio_over_time
-mean_filter_variance_over_time
-oracle_mean_filter_variance_over_time
-coverage_50_over_time
-coverage_90_over_time
-coverage_95_over_time
-```
-
-A global filtering-variance ratio regularizer was added for self-fed supervised
-training:
-
-```text
-loss = edge_KL + lambda * log(mean(q_var) / mean(oracle_var))^2
-```
-
-Sweep script:
-
-```text
-scripts/sweep_self_fed_variance_regularizer.py
-```
-
-The first requested small-weight sweep (`0, 0.001, 0.01, 0.05, 0.1`) initially
-showed no effect because the regularizer weight was accidentally not passed into
-the self-fed branch. After fixing the wiring, an effective sweep was run to:
-
-```text
-outputs/linear_gaussian_self_fed_variance_regularizer_fixed/
-```
-
-Summary:
-
-| lambda | filter KL | edge KL | state RMSE global | state NLL | cov 90 | var ratio | pred NLL | closed-form ELBO |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 0.013449 | 0.052610 | 0.556290 | 0.415215 | 0.899569 | 1.264531 | 0.608135 | -0.684673 |
-| 0.1 | 0.012900 | 0.051457 | 0.552749 | 0.415025 | 0.898189 | 1.013291 | 0.607679 | -0.679857 |
-| 1 | 0.014044 | 0.054504 | 0.553757 | 0.416383 | 0.897880 | 0.999278 | 0.608232 | -0.683403 |
-| 10 | 0.013349 | 0.053560 | 0.550709 | 0.415677 | 0.897091 | 1.000108 | 0.608097 | -0.679481 |
-
-Interpretation:
-
-- The global variance regularizer successfully corrects the self-fed variance
-  ratio from `1.26` to near `1.0`.
-- `lambda=0.1` is the best current tradeoff: it improves variance ratio,
-  filter KL, edge KL, global RMSE, predictive NLL, and closed-form ELBO
-  relative to no regularizer.
-- Coverage remains near 90% and changes only slightly, which suggests aggregate
-  variance ratio alone is not the full calibration story.
-- The next calibration step should inspect `coverage_*_over_time` and
-  `variance_ratio_over_time`; if miscalibration is time-local, move from global
-  variance regularization to per-time calibration penalties.
+- `closed_form_elbo_edge_mlp` trains the structured MLP with the analytic scalar
+  Gaussian edge ELBO instead of Monte Carlo samples.
+- `direct_elbo_edge_mlp`, `direct_closed_form_elbo_edge_mlp`, and
+  `direct_supervised_edge_mlp` provide less-structured filter ablations that do
+  not compute the Kalman gain internally.
+- `direct_predictive_head` provides the non-residualized predictive-head
+  ablation; existing `predictive_head` configs are treated as the backward
+  compatible alias for `analytic_residual_predictive_head`.
+- `scripts/sweep_diagnostic_baselines.py` accepts `--steps 250,1000,3000` for
+  matched-budget frozen-marginal and split-head diagnostics.

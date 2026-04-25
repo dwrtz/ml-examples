@@ -64,6 +64,22 @@ def init_split_head_mlp_params(
     }
 
 
+def init_direct_mlp_params(
+    key: jax.Array,
+    *,
+    hidden_dim: int = 32,
+    input_dim: int = 6,
+) -> dict[str, jax.Array]:
+    """Initialize a less-structured filtering MLP.
+
+    Unlike `StructuredMLPCell`, this parameterization does not compute an
+    analytic Kalman gain internally. The filter head emits a direct mean delta
+    and variance for `q^F_t`.
+    """
+
+    return init_structured_mlp_params(key, hidden_dim=hidden_dim, input_dim=input_dim)
+
+
 def run_structured_mlp_filter(
     mlp_params: dict[str, jax.Array],
     batch: EpisodeBatch,
@@ -80,6 +96,42 @@ def run_structured_mlp_filter(
         prev_mean, prev_var = carry
         x_t, y_t = obs
         outputs = structured_mlp_step(
+            mlp_params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            min_var=min_var,
+        )
+        next_carry = (outputs.filter_mean, outputs.filter_var)
+        return next_carry, outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
+    return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def run_direct_mlp_filter(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Run a less-structured learned filter over batch-major episodes."""
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array]):
+        prev_mean, prev_var = carry
+        x_t, y_t = obs
+        outputs = direct_mlp_step(
             mlp_params,
             prev_mean,
             prev_var,
@@ -134,6 +186,32 @@ def run_split_head_mlp_filter(
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def run_direct_mlp_teacher_forced(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    target_filter_mean: jax.Array,
+    target_filter_var: jax.Array,
+    *,
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Run direct updates using target previous beliefs as inputs."""
+
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
+    prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
+    return direct_mlp_step(
+        mlp_params,
+        prev_mean,
+        prev_var,
+        batch.x,
+        batch.y,
+        state_params,
+        min_var=min_var,
+    )
 
 
 def run_structured_mlp_teacher_forced(
@@ -223,6 +301,32 @@ def structured_mlp_step(
     filter_var = base_filter_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)) + min_var
     backward_a = raw[..., 2]
 
+    return StructuredMLPOutputs(
+        filter_mean=filter_mean,
+        filter_var=filter_var,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * filter_mean + raw[..., 3],
+        backward_var=jax.nn.softplus(raw[..., 4]) + min_var,
+    )
+
+
+def direct_mlp_step(
+    mlp_params: dict[str, jax.Array],
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Compute one non-residualized MLP filter update."""
+
+    hidden = _mlp_hidden(mlp_params, prev_mean, prev_var, x_t, y_t, state_params)
+    raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    filter_mean = prev_mean + raw[..., 0]
+    filter_var = jax.nn.softplus(raw[..., 1]) + min_var
+    backward_a = raw[..., 2]
     return StructuredMLPOutputs(
         filter_mean=filter_mean,
         filter_var=filter_var,

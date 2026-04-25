@@ -22,6 +22,7 @@ from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.losses import (
     EdgeElboTerms,
     edge_elbo_closed_form_terms_from_outputs,
+    edge_elbo_closed_form_loss,
     edge_elbo_loss,
     edge_elbo_terms,
     gaussian_kl,
@@ -42,8 +43,11 @@ from vbf.metrics import (
 from vbf.models.cells import (
     StructuredMLPOutputs,
     edge_mean_cov_from_outputs,
+    init_direct_mlp_params,
     init_split_head_mlp_params,
     init_structured_mlp_params,
+    run_direct_mlp_filter,
+    run_direct_mlp_teacher_forced,
     run_split_head_mlp_filter,
     run_split_head_mlp_teacher_forced,
     run_structured_mlp_filter,
@@ -56,6 +60,10 @@ SUPPORTED_MODELS = {
     "supervised_edge_mlp",
     "self_fed_supervised_edge_mlp",
     "elbo_edge_mlp",
+    "closed_form_elbo_edge_mlp",
+    "direct_elbo_edge_mlp",
+    "direct_closed_form_elbo_edge_mlp",
+    "direct_supervised_edge_mlp",
     "zero_init_edge_mlp",
     "frozen_marginal_backward_mlp",
     "supervised_edge_split_mlp",
@@ -127,6 +135,22 @@ def main() -> None:
                 train_oracle,
                 min_var=min_var,
             )
+        if objective == "direct_supervised_edge_mlp":
+            return _supervised_direct_edge_kl_loss(
+                current_params,
+                train_batch,
+                state_params,
+                train_oracle,
+                min_var=min_var,
+            )
+        if objective in {"closed_form_elbo_edge_mlp", "direct_closed_form_elbo_edge_mlp"}:
+            return edge_elbo_closed_form_loss(
+                current_params,
+                train_batch,
+                state_params,
+                min_var=min_var,
+                direct=objective == "direct_closed_form_elbo_edge_mlp",
+            )
         return edge_elbo_loss(
             current_params,
             train_batch,
@@ -137,6 +161,7 @@ def main() -> None:
             oracle=train_oracle,
             edge_kl_weight=edge_kl_weight,
             transition_consistency_weight=transition_consistency_weight,
+            direct=objective == "direct_elbo_edge_mlp",
         )
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -233,7 +258,7 @@ def main() -> None:
     max_abs_edge_mean = float(jnp.max(jnp.abs(pred_edge_mean)))
     elbo_terms = None
     oracle_elbo_terms = None
-    if objective == "elbo_edge_mlp":
+    if objective in {"elbo_edge_mlp", "direct_elbo_edge_mlp"}:
         elbo_terms = edge_elbo_terms(
             params,
             eval_batch,
@@ -241,6 +266,7 @@ def main() -> None:
             jax.random.PRNGKey(config["seed"] + 4),
             num_samples=int(training_config.get("num_elbo_samples", 8)),
             min_var=min_var,
+            direct=objective == "direct_elbo_edge_mlp",
         )
         oracle_elbo_terms = oracle_edge_elbo_terms(
             eval_oracle,
@@ -526,6 +552,8 @@ def _init_model_params(
     hidden_dim = int(training_config["hidden_dim"])
     if objective == "supervised_edge_split_mlp":
         return init_split_head_mlp_params(key, hidden_dim=hidden_dim)
+    if objective.startswith("direct_"):
+        return init_direct_mlp_params(key, hidden_dim=hidden_dim)
     return init_structured_mlp_params(key, hidden_dim=hidden_dim)
 
 
@@ -539,6 +567,8 @@ def _run_model_filter(
 ) -> StructuredMLPOutputs:
     if objective == "supervised_edge_split_mlp":
         return run_split_head_mlp_filter(params, batch, state_params, min_var=min_var)
+    if objective.startswith("direct_"):
+        return run_direct_mlp_filter(params, batch, state_params, min_var=min_var)
     return run_structured_mlp_filter(params, batch, state_params, min_var=min_var)
 
 
@@ -551,6 +581,26 @@ def _supervised_split_head_edge_kl_loss(
     min_var: float,
 ) -> jax.Array:
     outputs = run_split_head_mlp_teacher_forced(
+        params,
+        batch,
+        state_params,
+        oracle.filter_mean,
+        oracle.filter_var,
+        min_var=min_var,
+    )
+    pred_mean, pred_cov = edge_mean_cov_from_outputs(outputs)
+    return jnp.mean(gaussian_kl(oracle.edge_mean, oracle.edge_cov, pred_mean, pred_cov))
+
+
+def _supervised_direct_edge_kl_loss(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    oracle,
+    *,
+    min_var: float,
+) -> jax.Array:
+    outputs = run_direct_mlp_teacher_forced(
         params,
         batch,
         state_params,

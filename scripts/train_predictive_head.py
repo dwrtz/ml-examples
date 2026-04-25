@@ -20,7 +20,11 @@ from vbf.data import (
 )
 from vbf.kalman import kalman_edge_posterior_scalar
 from vbf.metrics import rmse_global, rmse_over_batch, scalar_gaussian_nll
-from vbf.models.heads import init_predictive_mlp_params, run_predictive_mlp_head
+from vbf.models.heads import (
+    init_predictive_mlp_params,
+    run_direct_predictive_mlp_head,
+    run_predictive_mlp_head,
+)
 from vbf.predictive import linear_gaussian_predictive_from_filter, previous_filter_beliefs
 from vbf.train import adam_update, init_adam
 
@@ -33,8 +37,18 @@ def main() -> None:
     with Path(args.config).open() as stream:
         config = yaml.safe_load(stream)
 
-    if config["model"] != "predictive_head":
-        raise ValueError("predictive head training requires model: predictive_head")
+    supported_models = {
+        "predictive_head",
+        "analytic_residual_predictive_head",
+        "direct_predictive_head",
+    }
+    if config["model"] not in supported_models:
+        raise ValueError(f"predictive head training requires one of: {sorted(supported_models)}")
+    objective = (
+        "analytic_residual_predictive_head"
+        if config["model"] == "predictive_head"
+        else config["model"]
+    )
 
     data_config = LinearGaussianDataConfig(**config["data"])
     state_params = LinearGaussianParams(**config["state_space"])
@@ -70,7 +84,8 @@ def main() -> None:
     opt_state = init_adam(params)
 
     def loss_fn(current_params: dict[str, jax.Array]) -> jax.Array:
-        outputs = run_predictive_mlp_head(
+        outputs = _run_head(
+            objective,
             current_params,
             train_prev_mean,
             train_prev_var,
@@ -94,7 +109,8 @@ def main() -> None:
             history.append((step, float(loss_value)))
 
     final_loss = float(loss_fn(params))
-    outputs = run_predictive_mlp_head(
+    outputs = _run_head(
+        objective,
         params,
         eval_prev_mean,
         eval_prev_var,
@@ -116,6 +132,7 @@ def main() -> None:
     learned_filter_diagnostics_path = evaluation_config.get("learned_filter_diagnostics")
     if learned_filter_diagnostics_path is not None:
         learned_filter_metrics = _evaluate_on_learned_filter_diagnostics(
+            objective,
             params,
             Path(learned_filter_diagnostics_path),
             state_params,
@@ -132,7 +149,7 @@ def main() -> None:
         output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
     )
     metrics = {
-        "objective": "predictive_head",
+        "objective": objective,
         "train_batch_size": data_config.batch_size,
         "eval_batch_size": eval_data_config.batch_size,
         "eval_num_batches": eval_num_batches,
@@ -195,6 +212,7 @@ def main() -> None:
 
 
 def _evaluate_on_learned_filter_diagnostics(
+    objective: str,
     params: dict[str, jax.Array],
     diagnostics_path: Path,
     state_params: LinearGaussianParams,
@@ -217,7 +235,8 @@ def _evaluate_on_learned_filter_diagnostics(
     prev_mean, prev_var = previous_filter_beliefs(
         learned_filter_mean, learned_filter_var, state_params
     )
-    head_outputs = run_predictive_mlp_head(
+    head_outputs = _run_head(
+        objective,
         params,
         prev_mean,
         prev_var,
@@ -243,6 +262,35 @@ def _evaluate_on_learned_filter_diagnostics(
             jnp.mean(head_outputs.var) / jnp.mean(exact_predictive_var)
         ),
     }
+
+
+def _run_head(
+    objective: str,
+    params: dict[str, jax.Array],
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    x: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float,
+):
+    if objective == "direct_predictive_head":
+        return run_direct_predictive_mlp_head(
+            params,
+            prev_mean,
+            prev_var,
+            x,
+            state_params,
+            min_var=min_var,
+        )
+    return run_predictive_mlp_head(
+        params,
+        prev_mean,
+        prev_var,
+        x,
+        state_params,
+        min_var=min_var,
+    )
 
 
 def _learned_filter_summary_lines(metrics: dict) -> list[str]:

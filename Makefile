@@ -17,6 +17,7 @@ EDGE_REGULARIZER_WEIGHTS ?= 0,0.01,0.05,0.1
 TRANSITION_CONSISTENCY_DIR ?= outputs/linear_gaussian_transition_consistency
 TRANSITION_CONSISTENCY_WEIGHTS ?= 0,0.01,0.05,0.1
 DIAGNOSTIC_BASELINES_DIR ?= outputs/linear_gaussian_diagnostic_baselines
+DIAGNOSTIC_BASELINES_STEPS ?= 250,1000,3000
 OBJECTIVE_BUDGET_DIR ?= outputs/linear_gaussian_objective_budget
 OBJECTIVE_BUDGET_STEPS ?= 250,1000,3000
 PREDICTIVE_HEAD_CONFIG ?= experiments/linear_gaussian/06_predictive_head.yaml
@@ -105,7 +106,7 @@ sweep-transition-consistency:
 	$(UV) run python scripts/sweep_transition_consistency.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(TRANSITION_CONSISTENCY_WEIGHTS) --output-dir $(TRANSITION_CONSISTENCY_DIR)
 
 sweep-diagnostic-baselines:
-	$(UV) run python scripts/sweep_diagnostic_baselines.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(DIAGNOSTIC_BASELINES_DIR)
+	$(UV) run python scripts/sweep_diagnostic_baselines.py --seeds $(LINEAR_SWEEP_SEEDS) --steps $(DIAGNOSTIC_BASELINES_STEPS) --output-dir $(DIAGNOSTIC_BASELINES_DIR)
 
 sweep-objective-budget:
 	$(UV) run python scripts/sweep_objective_budget.py --seeds $(LINEAR_SWEEP_SEEDS) --steps $(OBJECTIVE_BUDGET_STEPS) --output-dir $(OBJECTIVE_BUDGET_DIR)

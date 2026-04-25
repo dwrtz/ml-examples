@@ -15,6 +15,7 @@ from vbf.kalman import EdgeOracleOutputs  # noqa: E402
 from vbf.models.cells import (  # noqa: E402
     StructuredMLPOutputs,
     edge_mean_cov_from_outputs,
+    run_direct_mlp_filter,
     run_structured_mlp_filter,
     run_structured_mlp_teacher_forced,
 )
@@ -110,6 +111,7 @@ def edge_elbo_loss(
     oracle: EdgeOracleOutputs | None = None,
     edge_kl_weight: float = 0.0,
     transition_consistency_weight: float = 0.0,
+    direct: bool = False,
 ) -> jax.Array:
     """Negative mean local edge ELBO using reparameterized samples.
 
@@ -117,7 +119,10 @@ def edge_elbo_loss(
     in the ELBO is the model's own carried belief rather than an oracle target.
     """
 
-    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    if direct:
+        outputs = run_direct_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    else:
+        outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
     terms = edge_elbo_terms_from_outputs(
         outputs,
         batch,
@@ -139,6 +144,24 @@ def edge_elbo_loss(
             state_params,
         )
     return loss
+
+
+def edge_elbo_closed_form_loss(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-6,
+    direct: bool = False,
+) -> jax.Array:
+    """Negative mean closed-form scalar Gaussian edge ELBO."""
+
+    if direct:
+        outputs = run_direct_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    else:
+        outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    terms = edge_elbo_closed_form_terms_from_outputs(outputs, batch, state_params)
+    return -jnp.mean(terms.elbo)
 
 
 def transition_consistency_penalty(
@@ -164,10 +187,14 @@ def edge_elbo_terms(
     *,
     num_samples: int = 8,
     min_var: float = 1e-6,
+    direct: bool = False,
 ) -> EdgeElboTerms:
     """Return sample-averaged local edge ELBO terms for diagnostics."""
 
-    outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    if direct:
+        outputs = run_direct_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
+    else:
+        outputs = run_structured_mlp_filter(mlp_params, batch, state_params, min_var=min_var)
     return edge_elbo_terms_from_outputs(
         outputs,
         batch,
