@@ -172,7 +172,24 @@ Result:
 | learned predictive head | 0.599251 | 0.452217 | 0.990911 |
 | exact Kalman predictive | 0.595622 | 0.451505 | 1.000000 |
 
-The head stays close to the exact predictive reference in the scalar
-linear-Gaussian case. The next useful extension is to evaluate this head from a
-learned filter's carried `q^F_{t-1}` rather than only the oracle/Kalman belief,
-then run a multi-seed predictive sweep.
+The five-seed predictive sweep was run to:
+
+```text
+outputs/linear_gaussian_predictive_head_sweep/
+```
+
+Summary:
+
+| Predictor | predictive NLL | predictive RMSE | variance ratio |
+|---|---:|---:|---:|
+| learned head on oracle belief | 0.603713 | 0.454580 | 0.991398 |
+| exact Kalman predictive | 0.600858 | 0.453947 | 1.000000 |
+| learned head on ELBO belief | 0.645217 | n/a | 0.926123 |
+| analytic predictive from ELBO belief | 0.640331 | n/a | n/a |
+| exact predictive on same ELBO eval | 0.600858 | n/a | 1.000000 |
+
+The head is close to exact when fed oracle/Kalman beliefs. When fed the
+ELBO-trained filter beliefs, it is slightly worse than the analytic
+model-consistent predictive from the same learned belief. That suggests the next
+bottleneck is the learned filtering belief calibration, not a missing predictive
+mapping in the scalar linear-Gaussian case.

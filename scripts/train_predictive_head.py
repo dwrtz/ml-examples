@@ -107,6 +107,15 @@ def main() -> None:
     exact_nll_bt = scalar_gaussian_nll(eval_batch.y, exact_predictive.mean, exact_predictive.var)
     learned_rmse_t = rmse_over_batch(outputs.mean, eval_batch.y)
     exact_rmse_t = rmse_over_batch(exact_predictive.mean, eval_batch.y)
+    learned_filter_metrics = {}
+    learned_filter_diagnostics_path = evaluation_config.get("learned_filter_diagnostics")
+    if learned_filter_diagnostics_path is not None:
+        learned_filter_metrics = _evaluate_on_learned_filter_diagnostics(
+            params,
+            Path(learned_filter_diagnostics_path),
+            state_params,
+            min_var=min_var,
+        )
 
     output_dir = Path(config.get("output_dir", "outputs/linear_gaussian_predictive_head"))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +139,7 @@ def main() -> None:
         "mean_predictive_variance": float(jnp.mean(outputs.var)),
         "exact_mean_predictive_variance": float(jnp.mean(exact_predictive.var)),
         "variance_ratio": float(jnp.mean(outputs.var) / jnp.mean(exact_predictive.var)),
+        **learned_filter_metrics,
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
@@ -166,12 +176,73 @@ def main() -> None:
                 f"| predictive RMSE | {metrics['predictive_rmse']:.6f} |",
                 f"| exact predictive RMSE | {metrics['exact_predictive_rmse']:.6f} |",
                 f"| variance ratio | {metrics['variance_ratio']:.6f} |",
+                *_learned_filter_summary_lines(metrics),
                 "",
             ]
         ),
         encoding="utf-8",
     )
     print(f"Wrote {summary_path}")
+
+
+def _evaluate_on_learned_filter_diagnostics(
+    params: dict[str, jax.Array],
+    diagnostics_path: Path,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float,
+) -> dict[str, float | str]:
+    if not diagnostics_path.exists():
+        raise FileNotFoundError(f"Missing learned filter diagnostics: {diagnostics_path}")
+
+    with np.load(diagnostics_path) as diagnostics:
+        x = jnp.asarray(diagnostics["x"])
+        y = jnp.asarray(diagnostics["y"])
+        learned_filter_mean = jnp.asarray(diagnostics["learned_filter_mean"])
+        learned_filter_var = jnp.asarray(diagnostics["learned_filter_var"])
+        learned_predictive_mean = jnp.asarray(diagnostics["learned_predictive_mean"])
+        learned_predictive_var = jnp.asarray(diagnostics["learned_predictive_var"])
+        exact_predictive_mean = jnp.asarray(diagnostics["oracle_predictive_mean"])
+        exact_predictive_var = jnp.asarray(diagnostics["oracle_predictive_var"])
+
+    prev_mean, prev_var = previous_filter_beliefs(learned_filter_mean, learned_filter_var, state_params)
+    head_outputs = run_predictive_mlp_head(
+        params,
+        prev_mean,
+        prev_var,
+        x,
+        state_params,
+        min_var=min_var,
+    )
+    head_nll = scalar_gaussian_nll(y, head_outputs.mean, head_outputs.var)
+    analytic_nll = scalar_gaussian_nll(y, learned_predictive_mean, learned_predictive_var)
+    exact_nll = scalar_gaussian_nll(y, exact_predictive_mean, exact_predictive_var)
+    return {
+        "learned_filter_diagnostics": str(diagnostics_path),
+        "learned_filter_head_predictive_nll": float(jnp.mean(head_nll)),
+        "learned_filter_head_predictive_rmse": float(rmse_global(head_outputs.mean, y)),
+        "learned_filter_head_mean_predictive_variance": float(jnp.mean(head_outputs.var)),
+        "learned_filter_analytic_predictive_nll": float(jnp.mean(analytic_nll)),
+        "learned_filter_analytic_predictive_rmse": float(rmse_global(learned_predictive_mean, y)),
+        "learned_filter_analytic_mean_predictive_variance": float(jnp.mean(learned_predictive_var)),
+        "learned_filter_exact_predictive_nll": float(jnp.mean(exact_nll)),
+        "learned_filter_exact_predictive_rmse": float(rmse_global(exact_predictive_mean, y)),
+        "learned_filter_exact_mean_predictive_variance": float(jnp.mean(exact_predictive_var)),
+        "learned_filter_head_variance_ratio": float(
+            jnp.mean(head_outputs.var) / jnp.mean(exact_predictive_var)
+        ),
+    }
+
+
+def _learned_filter_summary_lines(metrics: dict) -> list[str]:
+    if "learned_filter_head_predictive_nll" not in metrics:
+        return []
+    return [
+        f"| learned-filter head predictive NLL | {metrics['learned_filter_head_predictive_nll']:.6f} |",
+        f"| learned-filter analytic predictive NLL | {metrics['learned_filter_analytic_predictive_nll']:.6f} |",
+        f"| learned-filter exact predictive NLL | {metrics['learned_filter_exact_predictive_nll']:.6f} |",
+        f"| learned-filter head variance ratio | {metrics['learned_filter_head_variance_ratio']:.6f} |",
+    ]
 
 
 def _make_eval_batch(
