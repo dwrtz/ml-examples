@@ -11,3 +11,4 @@ build/
 outputs/*
 !outputs/.gitkeep
 code.md
+notes.md
