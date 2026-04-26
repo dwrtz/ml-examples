@@ -914,3 +914,33 @@ At this point, the scalar linear-Gaussian benchmark has enough evidence for a
 coherent report: exact/frozen controls, weak-observability stress tests,
 fixed-Q/R transfer, randomized-Q/R conditioning, and calibrated ELBO vs
 self-fed supervision.
+
+## 22. Canonical randomized-Q/R report aggregation
+
+The split randomized-Q/R outputs can now be merged without rerunning
+experiments:
+
+```text
+scripts/aggregate_random_qr_generalization.py
+outputs/linear_gaussian_random_qr_generalization_canonical/
+```
+
+The canonical randomized-Q/R report combines:
+
+- frozen marginal rows from
+  `outputs/linear_gaussian_random_qr_generalization_full/frozen/`;
+- regime-local self-fed rows from
+  `outputs/linear_gaussian_random_qr_calibration_3000_regime_w1/self_fed/`;
+- regime-local calibrated ELBO rows from
+  `outputs/linear_gaussian_random_qr_calibration_3000_regime_w1/elbo/`.
+
+The default Make target is:
+
+```text
+make aggregate-random-qr-generalization
+```
+
+The generated canonical table has 15 rows: five Q/R evaluation regimes by
+three model/control rows. This is the report-ready randomized-Q/R table:
+frozen marginal backward MLP, regime-local self-fed supervised MLP, and
+regime-local calibrated MC ELBO.
