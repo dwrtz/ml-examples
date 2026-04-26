@@ -1,4 +1,26 @@
 name: nonlinear_sine_observation
 benchmark: nonlinear
-observation: sine
+observation: x_sine
+seed: 321
+output_dir: outputs/nonlinear_sine_observation_reference
 
+data:
+  batch_size: 128
+  time_steps: 96
+  x_pattern: sinusoidal
+  x_cycles: 3.0
+  x_amplitude: 1.0
+  x_constant: 1.0
+  x_missing_period: 4
+  observation: x_sine
+
+state_space:
+  q: 0.1
+  r: 0.1
+  m0: 1.0
+  p0: 10.0
+
+reference:
+  grid_min: -16.0
+  grid_max: 16.0
+  num_grid: 1601

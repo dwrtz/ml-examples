@@ -69,7 +69,7 @@ def make_linear_gaussian_batch(
     key_z0, key_w, key_v = jax.random.split(key, 3)
     key_x = jax.random.fold_in(key, 42)
 
-    x = _make_x(config, key_x)
+    x = make_observation_covariates(config, key_x)
 
     z_initial = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
         key_z0,
@@ -91,6 +91,15 @@ def make_linear_gaussian_batch(
     )
 
     return EpisodeBatch(x=x, y=y, z=z)
+
+
+def make_observation_covariates(
+    config: LinearGaussianDataConfig,
+    key: jax.Array,
+) -> jax.Array:
+    """Generate observed covariates shared by linear and nonlinear benchmarks."""
+
+    return _make_x(config, key)
 
 
 def broadcast_param_like(value: Any, target: jax.Array) -> jax.Array:

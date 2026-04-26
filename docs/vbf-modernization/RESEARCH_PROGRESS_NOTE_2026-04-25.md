@@ -975,3 +975,54 @@ the control, calibrated self-fed as the strongest learned baseline, and
 calibrated MC ELBO as the strongest unsupervised baseline. Calibration should
 match the stressor: low-observation time-local calibration for weak
 observability and regime-local calibration for randomized Q/R.
+
+## 24. Nonlinear observation foundation
+
+The nonlinear milestone has started with the data/reference layer, not learned
+filters. The first nonlinear observation family keeps the observed covariate
+explicit:
+
+```text
+z_t = z_{t-1} + w_t
+y_t = x_t * sin(z_t) + v_t
+```
+
+This preserves weak-observability behavior from the scalar Gaussian benchmark:
+when `x_t` is near zero, observations carry little state information.
+
+Implemented pieces:
+
+- `src/vbf/nonlinear.py`
+- `make_nonlinear_batch`
+- `nonlinear_grid_filter`
+- `scripts/evaluate_nonlinear.py`
+- `experiments/nonlinear/01_sine_observation.yaml`
+
+First reference run:
+
+```text
+outputs/nonlinear_sine_observation_reference/evaluation_summary.md
+```
+
+Summary:
+
+| Metric | Value |
+|---|---:|
+| observation | x_sine |
+| x pattern | sinusoidal |
+| state RMSE | 3.588544 |
+| state NLL | 2.691023 |
+| predictive NLL | 0.457118 |
+| coverage 90 | 0.913656 |
+| mean filter variance | 15.097689 |
+| mean predictive variance | 0.152546 |
+
+Interpretation:
+
+- The initial grid reference is numerically usable and produces near-nominal
+  filtering coverage.
+- The reference variance grows through the sequence, consistent with periodic
+  weak observability under sinusoidal `x_t`.
+- The next nonlinear step should add stress configs for zero, weak sinusoidal,
+  intermittent sinusoidal, and random-normal `x_t` before introducing learned
+  nonlinear filters.
