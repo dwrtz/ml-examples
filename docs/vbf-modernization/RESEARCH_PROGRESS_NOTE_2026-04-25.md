@@ -480,3 +480,70 @@ The next targeted fix should be an ELBO calibration objective that is local in
 time or observation regime. The zero-observation rows are a direct test case:
 the correct behavior is to let posterior variance grow with transition noise
 when `x_t = 0`.
+
+## 14. ELBO calibration penalty follow-up
+
+A targeted ELBO calibration penalty was added and swept on the diagnostic
+weak-observability subset:
+
+```text
+outputs/linear_gaussian_elbo_calibration_1000_time/
+outputs/linear_gaussian_elbo_calibration_1000_low_observation/
+outputs/linear_gaussian_elbo_calibration_3000_low_observation_w1/
+```
+
+Implemented penalties:
+
+```text
+global variance ratio:
+  log(mean(q_var) / mean(oracle_var))^2
+
+time-local variance ratio:
+  mean_t log(mean_batch(q_var_t) / mean_batch(oracle_var_t))^2
+
+low-observation weighted time-local variance ratio:
+  mean_t w_t log(mean_batch(q_var_t) / mean_batch(oracle_var_t))^2
+  w_t proportional to 1 / (mean_batch(x_t^2) + eps)
+```
+
+At 1000 steps, both the time-local and low-observation variants fixed the
+zero-observation failure. Weight `1` was best among the small sweep:
+
+| Pattern | Variant | state NLL | cov 90 | var ratio | edge KL |
+|---|---|---:|---:|---:|---:|
+| weak sinusoidal | baseline | 1.567729 | 0.716366 | 0.541531 | 0.576708 |
+| weak sinusoidal | low-observation `1` | 1.329884 | 0.845361 | 0.960429 | 0.252033 |
+| intermittent | baseline | 1.149016 | 0.760164 | 0.633970 | 0.499478 |
+| intermittent | low-observation `1` | 1.015093 | 0.863281 | 0.990728 | 0.259333 |
+| zero unobservable | baseline | 13.550503 | 0.280200 | 0.056969 | 13.340133 |
+| zero unobservable | low-observation `1` | 2.741467 | 0.907324 | 1.008089 | 0.001847 |
+
+The 3000-step confirmation run used only the low-observation weight `1` variant:
+
+| Pattern | Model | state NLL | cov 90 | var ratio | pred NLL | edge KL | closed-form ELBO |
+|---|---|---:|---:|---:|---:|---:|---:|
+| weak sinusoidal | unregularized MC ELBO | 1.291485 | 0.813155 | 0.668404 | 0.377645 | 0.166040 | -0.403913 |
+| weak sinusoidal | low-observation ELBO | 1.216600 | 0.881791 | 0.967360 | 0.373358 | 0.073323 | -0.406399 |
+| intermittent | unregularized MC ELBO | 0.947600 | 0.865519 | 0.892053 | 0.435886 | 0.082418 | -0.474541 |
+| intermittent | low-observation ELBO | 0.929798 | 0.892521 | 0.989241 | 0.433509 | 0.052070 | -0.469310 |
+| zero unobservable | unregularized MC ELBO | 7.010386 | 0.391683 | 0.108259 | 0.268452 | 4.948116 | -0.271079 |
+| zero unobservable | low-observation ELBO | 2.740240 | 0.905575 | 1.004223 | 0.268452 | 0.000163 | -0.268494 |
+
+Interpretation:
+
+- The low-observation-weighted variance penalty directly fixes the most severe
+  ELBO failure mode. In the fully unobservable regime, it restores oracle-level
+  variance growth, coverage, state NLL, and edge KL.
+- The penalty also improves weak and intermittent observation regimes. Coverage
+  and variance ratio move close to calibrated values, predictive NLL improves,
+  and edge KL drops substantially.
+- The closed-form ELBO is roughly unchanged or slightly worse in weak
+  sinusoidal, so this is a calibration tradeoff rather than pure ELBO
+  optimization. That is acceptable for the benchmark, but reports should label
+  it as calibrated ELBO rather than vanilla ELBO.
+
+Next useful step: run the calibrated ELBO row on the full weak-observability
+suite, including sinusoidal reference and random-normal regimes, and compare it
+against self-fed calibrated supervision. If the tradeoff remains favorable,
+make calibrated ELBO the default unsupervised baseline for weak-observability
+experiments.

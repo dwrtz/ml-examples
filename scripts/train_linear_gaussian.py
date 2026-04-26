@@ -89,6 +89,14 @@ def main() -> None:
     edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
     transition_consistency_weight = float(training_config.get("transition_consistency_weight", 0.0))
     variance_ratio_weight = float(training_config.get("variance_ratio_weight", 0.0))
+    elbo_variance_ratio_weight = float(training_config.get("elbo_variance_ratio_weight", 0.0))
+    elbo_time_variance_ratio_weight = float(
+        training_config.get("elbo_time_variance_ratio_weight", 0.0)
+    )
+    elbo_low_observation_variance_ratio_weight = float(
+        training_config.get("elbo_low_observation_variance_ratio_weight", 0.0)
+    )
+    low_observation_eps = float(training_config.get("low_observation_eps", 1e-3))
     objective = config["model"]
     if objective == "zero_init_edge_mlp" and int(training_config["steps"]) != 0:
         raise ValueError("zero_init_edge_mlp must use training.steps: 0")
@@ -161,6 +169,10 @@ def main() -> None:
             oracle=train_oracle,
             edge_kl_weight=edge_kl_weight,
             transition_consistency_weight=transition_consistency_weight,
+            variance_ratio_weight=elbo_variance_ratio_weight,
+            time_variance_ratio_weight=elbo_time_variance_ratio_weight,
+            low_observation_variance_ratio_weight=elbo_low_observation_variance_ratio_weight,
+            low_observation_eps=low_observation_eps,
             direct=objective == "direct_elbo_edge_mlp",
         )
 
@@ -306,6 +318,10 @@ def main() -> None:
         "edge_kl_weight": edge_kl_weight,
         "transition_consistency_weight": transition_consistency_weight,
         "variance_ratio_weight": variance_ratio_weight,
+        "elbo_variance_ratio_weight": elbo_variance_ratio_weight,
+        "elbo_time_variance_ratio_weight": elbo_time_variance_ratio_weight,
+        "elbo_low_observation_variance_ratio_weight": elbo_low_observation_variance_ratio_weight,
+        "low_observation_eps": low_observation_eps,
         "final_loss": final_loss,
         "final_edge_kl": float(jnp.mean(edge_kl_bt)),
         "filter_kl": filter_kl,

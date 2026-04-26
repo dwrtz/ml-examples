@@ -100,6 +100,34 @@ def filter_variance_ratio_penalty(
     return jnp.log(ratio) ** 2
 
 
+def filter_variance_ratio_over_time_penalty(
+    filter_var: jax.Array,
+    oracle_filter_var: jax.Array,
+) -> jax.Array:
+    """Mean squared log-ratio penalty across time-local filtering variance."""
+
+    learned_t = jnp.mean(filter_var, axis=0)
+    oracle_t = jnp.mean(oracle_filter_var, axis=0)
+    return jnp.mean(jnp.log(learned_t / oracle_t) ** 2)
+
+
+def low_observation_filter_variance_ratio_penalty(
+    filter_var: jax.Array,
+    oracle_filter_var: jax.Array,
+    x: jax.Array,
+    *,
+    eps: float = 1e-3,
+) -> jax.Array:
+    """Time-local variance-ratio penalty weighted toward weak observations."""
+
+    learned_t = jnp.mean(filter_var, axis=0)
+    oracle_t = jnp.mean(oracle_filter_var, axis=0)
+    mean_x2_t = jnp.mean(x**2, axis=0)
+    weights = 1.0 / (mean_x2_t + eps)
+    weights = weights / jnp.mean(weights)
+    return jnp.mean(weights * jnp.log(learned_t / oracle_t) ** 2)
+
+
 def edge_elbo_loss(
     mlp_params: dict[str, jax.Array],
     batch: EpisodeBatch,
@@ -111,6 +139,10 @@ def edge_elbo_loss(
     oracle: EdgeOracleOutputs | None = None,
     edge_kl_weight: float = 0.0,
     transition_consistency_weight: float = 0.0,
+    variance_ratio_weight: float = 0.0,
+    time_variance_ratio_weight: float = 0.0,
+    low_observation_variance_ratio_weight: float = 0.0,
+    low_observation_eps: float = 1e-3,
     direct: bool = False,
 ) -> jax.Array:
     """Negative mean local edge ELBO using reparameterized samples.
@@ -142,6 +174,35 @@ def edge_elbo_loss(
         loss = loss + transition_consistency_weight * transition_consistency_penalty(
             outputs,
             state_params,
+        )
+    if variance_ratio_weight != 0.0:
+        if oracle is None:
+            raise ValueError("oracle is required when variance_ratio_weight is nonzero")
+        loss = loss + variance_ratio_weight * filter_variance_ratio_penalty(
+            outputs.filter_var,
+            oracle.filter_var,
+        )
+    if time_variance_ratio_weight != 0.0:
+        if oracle is None:
+            raise ValueError("oracle is required when time_variance_ratio_weight is nonzero")
+        loss = loss + time_variance_ratio_weight * filter_variance_ratio_over_time_penalty(
+            outputs.filter_var,
+            oracle.filter_var,
+        )
+    if low_observation_variance_ratio_weight != 0.0:
+        if oracle is None:
+            raise ValueError(
+                "oracle is required when low_observation_variance_ratio_weight is nonzero"
+            )
+        loss = (
+            loss
+            + low_observation_variance_ratio_weight
+            * low_observation_filter_variance_ratio_penalty(
+                outputs.filter_var,
+                oracle.filter_var,
+                batch.x,
+                eps=low_observation_eps,
+            )
         )
     return loss
 

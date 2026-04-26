@@ -11,6 +11,8 @@ from vbf.losses import (
     edge_elbo_loss,
     edge_elbo_terms,
     filter_variance_ratio_penalty,
+    filter_variance_ratio_over_time_penalty,
+    low_observation_filter_variance_ratio_penalty,
     oracle_edge_elbo_closed_form_terms,
     oracle_edge_elbo_terms,
     supervised_edge_kl_loss,
@@ -229,6 +231,51 @@ def test_filter_variance_ratio_penalty() -> None:
     penalty = filter_variance_ratio_penalty(filter_var, oracle_var)
 
     np.testing.assert_allclose(float(penalty), float(jax.numpy.log(2.0) ** 2))
+
+
+def test_filter_variance_ratio_over_time_penalty() -> None:
+    filter_var = jax.numpy.array([[2.0, 1.0], [2.0, 4.0]])
+    oracle_var = jax.numpy.array([[1.0, 1.0], [1.0, 1.0]])
+
+    penalty = filter_variance_ratio_over_time_penalty(filter_var, oracle_var)
+
+    expected = jax.numpy.mean(jax.numpy.log(jax.numpy.array([2.0, 2.5])) ** 2)
+    np.testing.assert_allclose(float(penalty), float(expected))
+
+
+def test_low_observation_filter_variance_ratio_penalty_weights_low_x() -> None:
+    filter_var = jax.numpy.array([[2.0, 2.0], [2.0, 2.0]])
+    oracle_var = jax.numpy.array([[1.0, 1.0], [1.0, 1.0]])
+    x = jax.numpy.array([[0.0, 10.0], [0.0, 10.0]])
+
+    penalty = low_observation_filter_variance_ratio_penalty(filter_var, oracle_var, x)
+
+    np.testing.assert_allclose(float(penalty), float(jax.numpy.log(2.0) ** 2))
+
+
+def test_elbo_variance_ratio_penalties_are_scalar() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=153,
+    )
+    oracle = kalman_edge_posterior_scalar(batch, state_params)
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(0), hidden_dim=8)
+
+    loss = edge_elbo_loss(
+        mlp_params,
+        batch,
+        state_params,
+        jax.random.PRNGKey(1),
+        num_samples=4,
+        oracle=oracle,
+        variance_ratio_weight=0.1,
+        time_variance_ratio_weight=0.1,
+        low_observation_variance_ratio_weight=0.1,
+    )
+
+    assert loss.shape == ()
 
 
 def test_structured_mlp_teacher_forced_shapes() -> None:

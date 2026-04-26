@@ -30,8 +30,12 @@ SELF_FED_VARIANCE_STEPS ?= 3000
 WEAK_OBSERVABILITY_DIR ?= outputs/linear_gaussian_weak_observability
 WEAK_OBSERVABILITY_MODELS ?= zero,frozen,self_fed,self_fed_calibrated,elbo,direct_closed_form
 WEAK_OBSERVABILITY_STEPS ?= 3000
+ELBO_CALIBRATION_DIR ?= outputs/linear_gaussian_elbo_calibration
+ELBO_CALIBRATION_PATTERNS ?= weak_sinusoidal,intermittent_sinusoidal,zero_unobservable
+ELBO_CALIBRATION_WEIGHTS ?= 0,0.1,1
+ELBO_CALIBRATION_PENALTIES ?= time,low_observation
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -58,6 +62,7 @@ help:
 	@printf "  sweep-self-fed-supervised Run teacher-forced/self-fed/ELBO sweep\n"
 	@printf "  sweep-self-fed-variance Run self-fed variance-ratio regularizer sweep\n"
 	@printf "  sweep-weak-observability Run weak-observability linear-Gaussian suite\n"
+	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -129,6 +134,9 @@ sweep-self-fed-variance:
 
 sweep-weak-observability:
 	$(UV) run python scripts/sweep_weak_observability.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(WEAK_OBSERVABILITY_MODELS) --steps $(WEAK_OBSERVABILITY_STEPS) --output-dir $(WEAK_OBSERVABILITY_DIR)
+
+sweep-elbo-calibration:
+	$(UV) run python scripts/sweep_elbo_calibration.py --seeds $(LINEAR_SWEEP_SEEDS) --patterns $(ELBO_CALIBRATION_PATTERNS) --weights $(ELBO_CALIBRATION_WEIGHTS) --penalties $(ELBO_CALIBRATION_PENALTIES) --steps $(WEAK_OBSERVABILITY_STEPS) --output-dir $(ELBO_CALIBRATION_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
