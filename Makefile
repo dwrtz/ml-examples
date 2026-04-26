@@ -35,6 +35,7 @@ ELBO_CALIBRATION_PATTERNS ?= weak_sinusoidal,intermittent_sinusoidal,zero_unobse
 ELBO_CALIBRATION_WEIGHTS ?= 0,0.1,1
 ELBO_CALIBRATION_PENALTIES ?= time,low_observation
 WEAK_OBSERVABILITY_CANONICAL_DIR ?= outputs/linear_gaussian_weak_observability_canonical
+LINEAR_GAUSSIAN_FINAL_REPORT_DIR ?= outputs/linear_gaussian_final_report
 QR_GENERALIZATION_DIR ?= outputs/linear_gaussian_qr_generalization
 QR_GENERALIZATION_MODELS ?= frozen,self_fed_calibrated,elbo_calibrated
 QR_GENERALIZATION_TRAIN_PAIRS ?= 0.1:0.1
@@ -48,7 +49,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -77,6 +78,7 @@ help:
 	@printf "  sweep-weak-observability Run weak-observability linear-Gaussian suite\n"
 	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
 	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
+	@printf "  aggregate-linear-gaussian-final-report Build scalar Gaussian final report\n"
 	@printf "  sweep-qr-generalization Run fixed-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-generalization Run randomized-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-calibration Run randomized-Q/R calibration sweep\n"
@@ -158,6 +160,9 @@ sweep-elbo-calibration:
 
 aggregate-weak-observability:
 	$(UV) run python scripts/aggregate_weak_observability.py --output-dir $(WEAK_OBSERVABILITY_CANONICAL_DIR)
+
+aggregate-linear-gaussian-final-report:
+	$(UV) run python scripts/aggregate_linear_gaussian_final_report.py --output-dir $(LINEAR_GAUSSIAN_FINAL_REPORT_DIR)
 
 sweep-qr-generalization:
 	$(UV) run python scripts/sweep_qr_generalization.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(QR_GENERALIZATION_MODELS) --steps $(QR_GENERALIZATION_STEPS) --train-pairs $(QR_GENERALIZATION_TRAIN_PAIRS) --eval-pairs $(QR_GENERALIZATION_EVAL_PAIRS) --output-dir $(QR_GENERALIZATION_DIR)

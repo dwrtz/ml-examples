@@ -944,3 +944,34 @@ The generated canonical table has 15 rows: five Q/R evaluation regimes by
 three model/control rows. This is the report-ready randomized-Q/R table:
 frozen marginal backward MLP, regime-local self-fed supervised MLP, and
 regime-local calibrated MC ELBO.
+
+## 23. Top-level scalar linear-Gaussian final report
+
+The mature scalar linear-Gaussian results can now be built into one top-level
+review artifact:
+
+```text
+scripts/aggregate_linear_gaussian_final_report.py
+outputs/linear_gaussian_final_report/summary.md
+```
+
+The default Make target is:
+
+```text
+make aggregate-linear-gaussian-final-report
+```
+
+The report stitches together:
+
+- weak-observability canonical rows from
+  `outputs/linear_gaussian_weak_observability_canonical/`;
+- randomized-Q/R canonical rows from
+  `outputs/linear_gaussian_random_qr_generalization_canonical/`;
+- fixed-Q/R transfer pilot rows from
+  `outputs/linear_gaussian_qr_generalization_pilot/`.
+
+It summarizes the current scalar benchmark conclusion: use frozen marginal as
+the control, calibrated self-fed as the strongest learned baseline, and
+calibrated MC ELBO as the strongest unsupervised baseline. Calibration should
+match the stressor: low-observation time-local calibration for weak
+observability and regime-local calibration for randomized Q/R.
