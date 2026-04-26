@@ -44,8 +44,10 @@ RANDOM_QR_GENERALIZATION_DIR ?= outputs/linear_gaussian_random_qr_generalization
 RANDOM_QR_GENERALIZATION_MODELS ?= self_fed_calibrated,elbo_calibrated
 RANDOM_QR_GENERALIZATION_TRAIN_Q_VALUES ?= 0.03,0.1,0.3
 RANDOM_QR_GENERALIZATION_TRAIN_R_VALUES ?= 0.03,0.1,0.3
+RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
+RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability sweep-qr-generalization sweep-random-qr-generalization train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -76,6 +78,7 @@ help:
 	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
 	@printf "  sweep-qr-generalization Run fixed-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-generalization Run randomized-Q/R generalization suite\n"
+	@printf "  sweep-random-qr-calibration Run randomized-Q/R calibration sweep\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -159,6 +162,9 @@ sweep-qr-generalization:
 
 sweep-random-qr-generalization:
 	$(UV) run python scripts/sweep_random_qr_generalization.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(RANDOM_QR_GENERALIZATION_MODELS) --steps $(QR_GENERALIZATION_STEPS) --train-q-values $(RANDOM_QR_GENERALIZATION_TRAIN_Q_VALUES) --train-r-values $(RANDOM_QR_GENERALIZATION_TRAIN_R_VALUES) --eval-pairs $(QR_GENERALIZATION_EVAL_PAIRS) --output-dir $(RANDOM_QR_GENERALIZATION_DIR)
+
+sweep-random-qr-calibration:
+	$(UV) run python scripts/sweep_random_qr_calibration.py --seeds $(LINEAR_SWEEP_SEEDS) --weights $(RANDOM_QR_CALIBRATION_WEIGHTS) --steps $(QR_GENERALIZATION_STEPS) --train-q-values $(RANDOM_QR_GENERALIZATION_TRAIN_Q_VALUES) --train-r-values $(RANDOM_QR_GENERALIZATION_TRAIN_R_VALUES) --eval-pairs $(QR_GENERALIZATION_EVAL_PAIRS) --output-dir $(RANDOM_QR_CALIBRATION_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)

@@ -789,3 +789,73 @@ weak observability, fixed-to-held-out Q/R transfer, and randomized
 Q/R-conditioned generalization. The next research question is whether the ELBO
 calibration penalty should be regime-local over Q/R as well as time-local over
 weak observations.
+
+## 20. Regime-local randomized-Q/R calibration sweep
+
+A regime-local variance calibration penalty has been added. Randomized-Q/R
+training samples one Q/R pair per episode, so the penalty computes each
+episode's mean filtering-variance ratio before averaging:
+
+```text
+mean_b log(mean_t learned_var[b, t] / mean_t oracle_var[b, t])^2
+```
+
+This avoids the global mean-ratio failure mode where low-noise and high-noise
+episodes compensate for one another.
+
+Sweep entry point:
+
+```text
+scripts/sweep_random_qr_calibration.py
+make sweep-random-qr-calibration
+```
+
+Pilot run:
+
+```text
+outputs/linear_gaussian_random_qr_calibration_1000/
+```
+
+Setup:
+
+- training Q grid: `[0.03, 0.1, 0.3]`
+- training R grid: `[0.03, 0.1, 0.3]`
+- regime-local weights: `[0, 0.1, 1]`
+- three seeds, 1000 steps
+
+Selected rows:
+
+| Model | eval Q | eval R | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| self-fed regime `0` | 0.03 | 0.03 | 0.018813 | 0.218135 | -0.170277 | 0.896200 | 1.274742 | 0.010959 |
+| self-fed regime `0.1` | 0.03 | 0.03 | 0.017687 | 0.220176 | -0.171511 | 0.893982 | 1.056811 | 0.010539 |
+| self-fed regime `1` | 0.03 | 0.03 | 0.017289 | 0.221037 | -0.172165 | 0.892870 | 1.009428 | 0.010145 |
+| self-fed regime `0` | 0.3 | 0.03 | 0.011935 | 0.139749 | 0.145849 | 0.895087 | 1.126717 | 0.533071 |
+| self-fed regime `0.1` | 0.3 | 0.03 | 0.009496 | 0.139036 | 0.143295 | 0.893480 | 1.015922 | 0.532027 |
+| self-fed regime `1` | 0.3 | 0.03 | 0.009083 | 0.138341 | 0.142941 | 0.895487 | 0.998967 | 0.531943 |
+| ELBO regime `0` | 0.03 | 0.3 | 0.443742 | 0.715924 | 0.906704 | 0.729980 | 0.704004 | 1.015059 |
+| ELBO regime `0.1` | 0.03 | 0.3 | 0.323284 | 0.543187 | 0.786138 | 0.769606 | 0.804411 | 1.005228 |
+| ELBO regime `1` | 0.03 | 0.3 | 0.217155 | 0.394841 | 0.680106 | 0.821181 | 0.960507 | 0.995392 |
+| ELBO regime `0` | 0.3 | 0.03 | 0.055592 | 0.427771 | 0.190798 | 0.913310 | 1.176804 | 0.548758 |
+| ELBO regime `0.1` | 0.3 | 0.03 | 0.053040 | 0.440685 | 0.188285 | 0.907362 | 1.105770 | 0.548545 |
+| ELBO regime `1` | 0.3 | 0.03 | 0.050200 | 0.464354 | 0.185569 | 0.899333 | 1.017258 | 0.548019 |
+
+Interpretation:
+
+- Regime-local calibration is clearly better than global calibration for
+  randomized self-fed supervision. Weight `1` brings variance ratios close to
+  one across evaluated Q/R regimes with little or no cost to filter KL,
+  predictive NLL, or state NLL.
+- The same penalty also helps calibrated ELBO's worst randomized-Q/R case. At
+  `Q=0.03, R=0.3`, weight `1` improves variance ratio from `0.70` to `0.96`,
+  coverage from `0.73` to `0.82`, filter KL from `0.44` to `0.22`, and edge KL
+  from `0.72` to `0.39`.
+- ELBO remains weaker than self-fed supervision after this fix. The penalty
+  improves calibration and state metrics, but does not close the full objective
+  gap.
+
+Recommended next confirmation: run randomized self-fed and calibrated ELBO with
+regime-local weight `1` at five seeds and 3000 steps. If the 1000-step pattern
+holds, use regime-local self-fed as the default supervised Q/R generalization
+baseline and regime-local calibrated ELBO as the strongest unsupervised Q/R
+baseline.

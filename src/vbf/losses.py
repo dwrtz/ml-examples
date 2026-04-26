@@ -71,6 +71,7 @@ def self_fed_supervised_edge_kl_loss(
     *,
     min_var: float = 1e-6,
     variance_ratio_weight: float = 0.0,
+    regime_variance_ratio_weight: float = 0.0,
 ) -> jax.Array:
     """Mean rollout `KL(q_oracle_edge || q_learned_edge)`.
 
@@ -84,6 +85,11 @@ def self_fed_supervised_edge_kl_loss(
     loss = jnp.mean(kl)
     if variance_ratio_weight != 0.0:
         loss = loss + variance_ratio_weight * filter_variance_ratio_penalty(
+            outputs.filter_var,
+            oracle.filter_var,
+        )
+    if regime_variance_ratio_weight != 0.0:
+        loss = loss + regime_variance_ratio_weight * regime_filter_variance_ratio_penalty(
             outputs.filter_var,
             oracle.filter_var,
         )
@@ -109,6 +115,22 @@ def filter_variance_ratio_over_time_penalty(
     learned_t = jnp.mean(filter_var, axis=0)
     oracle_t = jnp.mean(oracle_filter_var, axis=0)
     return jnp.mean(jnp.log(learned_t / oracle_t) ** 2)
+
+
+def regime_filter_variance_ratio_penalty(
+    filter_var: jax.Array,
+    oracle_filter_var: jax.Array,
+) -> jax.Array:
+    """Mean squared log-ratio penalty for episode-local variance calibration.
+
+    Randomized-Q/R training samples one noise regime per episode. Averaging the
+    variance ratio per episode therefore gives a regime-local calibration
+    penalty without needing dynamic grouping inside JAX.
+    """
+
+    learned_b = jnp.mean(filter_var, axis=1)
+    oracle_b = jnp.mean(oracle_filter_var, axis=1)
+    return jnp.mean(jnp.log(learned_b / oracle_b) ** 2)
 
 
 def low_observation_filter_variance_ratio_penalty(
@@ -142,6 +164,7 @@ def edge_elbo_loss(
     variance_ratio_weight: float = 0.0,
     time_variance_ratio_weight: float = 0.0,
     low_observation_variance_ratio_weight: float = 0.0,
+    regime_variance_ratio_weight: float = 0.0,
     low_observation_eps: float = 1e-3,
     direct: bool = False,
 ) -> jax.Array:
@@ -203,6 +226,13 @@ def edge_elbo_loss(
                 batch.x,
                 eps=low_observation_eps,
             )
+        )
+    if regime_variance_ratio_weight != 0.0:
+        if oracle is None:
+            raise ValueError("oracle is required when regime_variance_ratio_weight is nonzero")
+        loss = loss + regime_variance_ratio_weight * regime_filter_variance_ratio_penalty(
+            outputs.filter_var,
+            oracle.filter_var,
         )
     return loss
 

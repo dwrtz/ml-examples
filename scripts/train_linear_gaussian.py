@@ -93,12 +93,16 @@ def main() -> None:
     edge_kl_weight = float(training_config.get("edge_kl_weight", 0.0))
     transition_consistency_weight = float(training_config.get("transition_consistency_weight", 0.0))
     variance_ratio_weight = float(training_config.get("variance_ratio_weight", 0.0))
+    regime_variance_ratio_weight = float(training_config.get("regime_variance_ratio_weight", 0.0))
     elbo_variance_ratio_weight = float(training_config.get("elbo_variance_ratio_weight", 0.0))
     elbo_time_variance_ratio_weight = float(
         training_config.get("elbo_time_variance_ratio_weight", 0.0)
     )
     elbo_low_observation_variance_ratio_weight = float(
         training_config.get("elbo_low_observation_variance_ratio_weight", 0.0)
+    )
+    elbo_regime_variance_ratio_weight = float(
+        training_config.get("elbo_regime_variance_ratio_weight", 0.0)
     )
     low_observation_eps = float(training_config.get("low_observation_eps", 1e-3))
     objective = config["model"]
@@ -144,6 +148,7 @@ def main() -> None:
                 train_oracle,
                 min_var=min_var,
                 variance_ratio_weight=variance_ratio_weight,
+                regime_variance_ratio_weight=regime_variance_ratio_weight,
             )
         if objective == "supervised_edge_split_mlp":
             return _supervised_split_head_edge_kl_loss(
@@ -182,6 +187,7 @@ def main() -> None:
             variance_ratio_weight=elbo_variance_ratio_weight,
             time_variance_ratio_weight=elbo_time_variance_ratio_weight,
             low_observation_variance_ratio_weight=elbo_low_observation_variance_ratio_weight,
+            regime_variance_ratio_weight=elbo_regime_variance_ratio_weight,
             low_observation_eps=low_observation_eps,
             direct=objective == "direct_elbo_edge_mlp",
         )
@@ -328,9 +334,11 @@ def main() -> None:
         "edge_kl_weight": edge_kl_weight,
         "transition_consistency_weight": transition_consistency_weight,
         "variance_ratio_weight": variance_ratio_weight,
+        "regime_variance_ratio_weight": regime_variance_ratio_weight,
         "elbo_variance_ratio_weight": elbo_variance_ratio_weight,
         "elbo_time_variance_ratio_weight": elbo_time_variance_ratio_weight,
         "elbo_low_observation_variance_ratio_weight": elbo_low_observation_variance_ratio_weight,
+        "elbo_regime_variance_ratio_weight": elbo_regime_variance_ratio_weight,
         "low_observation_eps": low_observation_eps,
         "final_loss": final_loss,
         "final_edge_kl": float(jnp.mean(edge_kl_bt)),

@@ -15,6 +15,7 @@ from vbf.losses import (
     low_observation_filter_variance_ratio_penalty,
     oracle_edge_elbo_closed_form_terms,
     oracle_edge_elbo_terms,
+    regime_filter_variance_ratio_penalty,
     supervised_edge_kl_loss,
     transition_consistency_penalty,
 )
@@ -243,6 +244,15 @@ def test_filter_variance_ratio_over_time_penalty() -> None:
     np.testing.assert_allclose(float(penalty), float(expected))
 
 
+def test_regime_filter_variance_ratio_penalty() -> None:
+    filter_var = jax.numpy.array([[2.0, 2.0], [4.0, 4.0]])
+    oracle_var = jax.numpy.array([[1.0, 1.0], [2.0, 2.0]])
+
+    penalty = regime_filter_variance_ratio_penalty(filter_var, oracle_var)
+
+    np.testing.assert_allclose(float(penalty), float(jax.numpy.log(2.0) ** 2))
+
+
 def test_low_observation_filter_variance_ratio_penalty_weights_low_x() -> None:
     filter_var = jax.numpy.array([[2.0, 2.0], [2.0, 2.0]])
     oracle_var = jax.numpy.array([[1.0, 1.0], [1.0, 1.0]])
@@ -273,6 +283,7 @@ def test_elbo_variance_ratio_penalties_are_scalar() -> None:
         variance_ratio_weight=0.1,
         time_variance_ratio_weight=0.1,
         low_observation_variance_ratio_weight=0.1,
+        regime_variance_ratio_weight=0.1,
     )
 
     assert loss.shape == ()
