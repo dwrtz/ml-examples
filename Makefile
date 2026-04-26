@@ -34,8 +34,9 @@ ELBO_CALIBRATION_DIR ?= outputs/linear_gaussian_elbo_calibration
 ELBO_CALIBRATION_PATTERNS ?= weak_sinusoidal,intermittent_sinusoidal,zero_unobservable
 ELBO_CALIBRATION_WEIGHTS ?= 0,0.1,1
 ELBO_CALIBRATION_PENALTIES ?= time,low_observation
+WEAK_OBSERVABILITY_CANONICAL_DIR ?= outputs/linear_gaussian_weak_observability_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -63,6 +64,7 @@ help:
 	@printf "  sweep-self-fed-variance Run self-fed variance-ratio regularizer sweep\n"
 	@printf "  sweep-weak-observability Run weak-observability linear-Gaussian suite\n"
 	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
+	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -137,6 +139,9 @@ sweep-weak-observability:
 
 sweep-elbo-calibration:
 	$(UV) run python scripts/sweep_elbo_calibration.py --seeds $(LINEAR_SWEEP_SEEDS) --patterns $(ELBO_CALIBRATION_PATTERNS) --weights $(ELBO_CALIBRATION_WEIGHTS) --penalties $(ELBO_CALIBRATION_PENALTIES) --steps $(WEAK_OBSERVABILITY_STEPS) --output-dir $(ELBO_CALIBRATION_DIR)
+
+aggregate-weak-observability:
+	$(UV) run python scripts/aggregate_weak_observability.py --output-dir $(WEAK_OBSERVABILITY_CANONICAL_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)

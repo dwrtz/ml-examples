@@ -590,3 +590,33 @@ Interpretation:
 - For future weak-observability reports, include three rows by default:
   exact/frozen marginal control, calibrated self-fed supervised, and calibrated
   ELBO. Vanilla MC ELBO should remain as the failure-mode baseline.
+
+## 16. Canonical weak-observability report aggregation
+
+The split weak-observability outputs can now be merged without rerunning
+experiments:
+
+```text
+scripts/aggregate_weak_observability.py
+outputs/linear_gaussian_weak_observability_canonical/
+```
+
+The canonical report combines:
+
+- weak-observability split rows from
+  `outputs/linear_gaussian_weak_observability_split/`;
+- calibrated ELBO rows from
+  `outputs/linear_gaussian_elbo_calibration_3000_low_observation_w1/`;
+- remaining calibrated ELBO rows from
+  `outputs/linear_gaussian_elbo_calibration_3000_low_observation_w1_full_remaining/`.
+
+The default Make target is:
+
+```text
+make aggregate-weak-observability
+```
+
+The generated canonical table has 40 rows: five observation regimes by eight
+model/control rows. It also includes a compact comparison section with exact
+Kalman, frozen marginal, calibrated self-fed, vanilla MC ELBO, and calibrated
+MC ELBO.
