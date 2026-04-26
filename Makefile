@@ -35,8 +35,13 @@ ELBO_CALIBRATION_PATTERNS ?= weak_sinusoidal,intermittent_sinusoidal,zero_unobse
 ELBO_CALIBRATION_WEIGHTS ?= 0,0.1,1
 ELBO_CALIBRATION_PENALTIES ?= time,low_observation
 WEAK_OBSERVABILITY_CANONICAL_DIR ?= outputs/linear_gaussian_weak_observability_canonical
+QR_GENERALIZATION_DIR ?= outputs/linear_gaussian_qr_generalization
+QR_GENERALIZATION_MODELS ?= frozen,self_fed_calibrated,elbo_calibrated
+QR_GENERALIZATION_TRAIN_PAIRS ?= 0.1:0.1
+QR_GENERALIZATION_EVAL_PAIRS ?= 0.03:0.03,0.1:0.1,0.3:0.3,0.03:0.3,0.3:0.03
+QR_GENERALIZATION_STEPS ?= 1000
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability sweep-qr-generalization train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -65,6 +70,7 @@ help:
 	@printf "  sweep-weak-observability Run weak-observability linear-Gaussian suite\n"
 	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
 	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
+	@printf "  sweep-qr-generalization Run fixed-Q/R generalization suite\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  clean              Remove local caches\n"
@@ -142,6 +148,9 @@ sweep-elbo-calibration:
 
 aggregate-weak-observability:
 	$(UV) run python scripts/aggregate_weak_observability.py --output-dir $(WEAK_OBSERVABILITY_CANONICAL_DIR)
+
+sweep-qr-generalization:
+	$(UV) run python scripts/sweep_qr_generalization.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(QR_GENERALIZATION_MODELS) --steps $(QR_GENERALIZATION_STEPS) --train-pairs $(QR_GENERALIZATION_TRAIN_PAIRS) --eval-pairs $(QR_GENERALIZATION_EVAL_PAIRS) --output-dir $(QR_GENERALIZATION_DIR)
 
 train-nonlinear:
 	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)

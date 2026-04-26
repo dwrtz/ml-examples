@@ -620,3 +620,52 @@ The generated canonical table has 40 rows: five observation regimes by eight
 model/control rows. It also includes a compact comparison section with exact
 Kalman, frozen marginal, calibrated self-fed, vanilla MC ELBO, and calibrated
 MC ELBO.
+
+## 17. Fixed-Q/R generalization pilot
+
+A first fixed-regime Q/R generalization sweep has been added:
+
+```text
+scripts/sweep_qr_generalization.py
+make sweep-qr-generalization
+```
+
+The pilot trained only at `Q=0.1, R=0.1` for three seeds and 1000 steps, then
+evaluated the learned parameters across five fixed Q/R regimes:
+
+```text
+outputs/linear_gaussian_qr_generalization_pilot/
+```
+
+Selected rows:
+
+| Model | eval Q | eval R | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL | oracle pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| frozen marginal | 0.03 | 0.03 | 0.000000 | 0.924198 | -0.190343 | 0.899828 | 1.000011 | 0.002321 | 0.002321 |
+| calibrated self-fed | 0.03 | 0.03 | 0.028517 | 0.862889 | -0.161138 | 0.887953 | 1.087920 | 0.015010 | 0.002321 |
+| calibrated ELBO | 0.03 | 0.03 | 0.093179 | 0.675245 | -0.095235 | 0.877367 | 0.934506 | 0.047272 | 0.002321 |
+| frozen marginal | 0.1 | 0.1 | 0.000000 | 0.116421 | 0.404516 | 0.899624 | 1.000006 | 0.598216 | 0.598216 |
+| calibrated self-fed | 0.1 | 0.1 | 0.018851 | 0.093752 | 0.423695 | 0.894504 | 1.054077 | 0.607364 | 0.598216 |
+| calibrated ELBO | 0.1 | 0.1 | 0.061831 | 0.234635 | 0.467544 | 0.885980 | 0.993896 | 0.624217 | 0.598216 |
+| frozen marginal | 0.3 | 0.3 | 0.000000 | 0.848751 | 0.946073 | 0.899767 | 1.000003 | 1.142270 | 1.142270 |
+| calibrated self-fed | 0.3 | 0.3 | 0.049005 | 0.935454 | 0.995222 | 0.901564 | 1.226342 | 1.157989 | 1.142270 |
+| calibrated ELBO | 0.3 | 0.3 | 0.060230 | 0.862180 | 1.008251 | 0.891378 | 1.048407 | 1.162292 | 1.142270 |
+
+Interpretation:
+
+- Frozen marginal keeps exact Kalman filtering and prediction for any fixed Q/R
+  because the marginal update still receives the evaluation regime parameters.
+  Its learned backward conditional does not extrapolate cleanly: edge KL grows
+  off the training regime, especially for mismatched low/high process and
+  observation noise.
+- Calibrated self-fed supervision stays close on filtering metrics at the
+  training regime, but variance becomes over-dispersed when evaluated at larger
+  Q/R values (`variance_ratio` about `1.23` at `Q=0.3, R=0.3`).
+- Calibrated ELBO is less accurate on state NLL than calibrated self-fed at the
+  training regime, but its variance ratio is steadier across this pilot grid.
+
+This is still fixed-regime transfer rather than true randomized-regime
+generalization. The next version should train on multiple Q/R pairs, and a
+proper randomized-regime model should condition the learned components on
+`log Q` and `log R` rather than relying on scalar parameters supplied only to
+the analytic update.
