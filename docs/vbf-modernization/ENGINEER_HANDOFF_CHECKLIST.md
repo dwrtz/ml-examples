@@ -2,6 +2,55 @@
 
 Prepared: 2026-04-24
 
+## 0. Current status as of 2026-04-26
+
+The scalar linear-Gaussian benchmark is now stable enough to treat as a
+reporting suite, not an open implementation task.
+
+Canonical report artifacts:
+
+```text
+outputs/linear_gaussian_weak_observability_canonical/summary.md
+outputs/linear_gaussian_random_qr_generalization_canonical/summary.md
+outputs/linear_gaussian_final_report/summary.md
+```
+
+Regenerate them from existing split outputs with:
+
+```text
+make aggregate-linear-gaussian-reports
+```
+
+Recommended default rows:
+
+| Suite | Recommended rows |
+|---|---|
+| Weak observability | exact Kalman; frozen marginal; calibrated self-fed; vanilla MC ELBO; calibrated MC ELBO |
+| Randomized Q/R | frozen marginal; regime-local self-fed; regime-local calibrated MC ELBO |
+| Fixed Q/R transfer | frozen marginal; calibrated self-fed; calibrated MC ELBO as supporting diagnostic evidence |
+
+Current conclusions:
+
+- Frozen marginal is the key control. It preserves exact Kalman filtering and
+  isolates learned backward/edge conditional quality.
+- Self-fed supervised filtering is the strongest learned baseline.
+- MC ELBO needs calibration. Low-observation time-local calibration fixes weak
+  observability failures; regime-local calibration fixes randomized-Q/R
+  variance-ratio failures.
+- Direct non-residualized ELBO remains much weaker in this scalar benchmark, so
+  reports should not blur residualized analytic-update models with filters
+  learned from scratch.
+
+Recommended next research step:
+
+1. Start the nonlinear observation milestone only after preserving the current
+   scalar reports.
+2. Use the same explicit filtering marginal and edge factorization.
+3. Replace exact Kalman diagnostics with approximate references, such as
+   particle filtering or high-sample Monte Carlo diagnostics.
+4. Keep frozen/residualized controls separate from learned-from-scratch
+   filtering claims.
+
 ## 1. Research objective
 
 Build a modern learned variational Bayesian filtering benchmark that answers:

@@ -49,7 +49,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear clean
 
 help:
 	@printf "Targets:\n"
@@ -79,6 +79,7 @@ help:
 	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
 	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
 	@printf "  aggregate-linear-gaussian-final-report Build scalar Gaussian final report\n"
+	@printf "  aggregate-linear-gaussian-reports Rebuild all scalar Gaussian reports\n"
 	@printf "  sweep-qr-generalization Run fixed-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-generalization Run randomized-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-calibration Run randomized-Q/R calibration sweep\n"
@@ -163,6 +164,8 @@ aggregate-weak-observability:
 
 aggregate-linear-gaussian-final-report:
 	$(UV) run python scripts/aggregate_linear_gaussian_final_report.py --output-dir $(LINEAR_GAUSSIAN_FINAL_REPORT_DIR)
+
+aggregate-linear-gaussian-reports: aggregate-weak-observability aggregate-random-qr-generalization aggregate-linear-gaussian-final-report
 
 sweep-qr-generalization:
 	$(UV) run python scripts/sweep_qr_generalization.py --seeds $(LINEAR_SWEEP_SEEDS) --models $(QR_GENERALIZATION_MODELS) --steps $(QR_GENERALIZATION_STEPS) --train-pairs $(QR_GENERALIZATION_TRAIN_PAIRS) --eval-pairs $(QR_GENERALIZATION_EVAL_PAIRS) --output-dir $(QR_GENERALIZATION_DIR)
