@@ -547,3 +547,46 @@ suite, including sinusoidal reference and random-normal regimes, and compare it
 against self-fed calibrated supervision. If the tradeoff remains favorable,
 make calibrated ELBO the default unsupervised baseline for weak-observability
 experiments.
+
+## 15. Full weak-observability calibrated ELBO comparison
+
+The calibrated ELBO row was completed for the remaining full-suite regimes:
+
+```text
+outputs/linear_gaussian_elbo_calibration_3000_low_observation_w1_full_remaining/
+```
+
+Together with the previous diagnostic run, this gives calibrated ELBO results
+for all weak-observability patterns. Summary against unregularized ELBO and
+calibrated self-fed supervision:
+
+| Pattern | Model | state NLL | cov 90 | var ratio | pred NLL |
+|---|---|---:|---:|---:|---:|
+| sinusoidal reference | MC ELBO | 0.492098 | 0.849060 | 0.662955 | 0.622721 |
+| sinusoidal reference | calibrated ELBO | 0.438505 | 0.893258 | 0.998726 | 0.615828 |
+| sinusoidal reference | calibrated self-fed | 0.415025 | 0.898189 | 1.013291 | 0.607679 |
+| weak sinusoidal | MC ELBO | 1.291485 | 0.813155 | 0.668404 | 0.377645 |
+| weak sinusoidal | calibrated ELBO | 1.216600 | 0.881791 | 0.967360 | 0.373358 |
+| weak sinusoidal | calibrated self-fed | 1.184098 | 0.896826 | 0.999368 | 0.366838 |
+| intermittent | MC ELBO | 0.947600 | 0.865519 | 0.892053 | 0.435886 |
+| intermittent | calibrated ELBO | 0.929798 | 0.892521 | 0.989241 | 0.433509 |
+| intermittent | calibrated self-fed | 0.912915 | 0.899064 | 1.002485 | 0.432007 |
+| zero unobservable | MC ELBO | 7.010386 | 0.391683 | 0.108259 | 0.268452 |
+| zero unobservable | calibrated ELBO | 2.740240 | 0.905575 | 1.004223 | 0.268452 |
+| zero unobservable | calibrated self-fed | 2.742646 | 0.911780 | 1.055466 | 0.268452 |
+| random normal | MC ELBO | 0.306598 | 0.847164 | 0.776662 | 0.711019 |
+| random normal | calibrated ELBO | 0.272531 | 0.889945 | 0.972512 | 0.707264 |
+| random normal | calibrated self-fed | 0.223558 | 0.896183 | 0.989436 | 0.694443 |
+
+Interpretation:
+
+- Calibrated ELBO improves every weak-observability regime over vanilla MC ELBO.
+  The main effect is correcting under-dispersion: variance ratio moves from
+  `0.66-0.89` to approximately `0.97-1.00` in observed regimes and from `0.108`
+  to `1.004` in the zero-observation regime.
+- Calibrated self-fed supervision still has better state NLL and predictive NLL
+  in observed regimes, but calibrated ELBO is now a much stronger unsupervised
+  baseline and no longer fails catastrophically when observations vanish.
+- For future weak-observability reports, include three rows by default:
+  exact/frozen marginal control, calibrated self-fed supervised, and calibrated
+  ELBO. Vanilla MC ELBO should remain as the failure-mode baseline.

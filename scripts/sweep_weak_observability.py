@@ -42,9 +42,10 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--num-elbo-samples", type=int, default=32)
     parser.add_argument("--variance-ratio-weight", type=float, default=0.1)
+    parser.add_argument("--elbo-low-observation-weight", type=float, default=1.0)
     parser.add_argument(
         "--models",
-        default="zero,frozen,self_fed,self_fed_calibrated,elbo,direct_closed_form",
+        default="zero,frozen,self_fed,self_fed_calibrated,elbo,elbo_calibrated,direct_closed_form",
     )
     parser.add_argument("--output-dir", default="outputs/linear_gaussian_weak_observability")
     parser.add_argument("--skip-train", action="store_true")
@@ -57,7 +58,12 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    specs = _model_specs(args.steps, args.num_elbo_samples, args.variance_ratio_weight)
+    specs = _model_specs(
+        args.steps,
+        args.num_elbo_samples,
+        args.variance_ratio_weight,
+        args.elbo_low_observation_weight,
+    )
     rows: list[Row] = []
     oracle_seen: set[tuple[str, int]] = set()
     for pattern in patterns:
@@ -125,6 +131,7 @@ def _model_specs(
     steps: int,
     num_elbo_samples: int,
     variance_ratio_weight: float,
+    elbo_low_observation_weight: float,
 ) -> dict[str, ModelSpec]:
     return {
         "zero": ModelSpec(
@@ -172,6 +179,20 @@ def _model_specs(
             steps=steps,
             training_overrides={"steps": steps, "num_elbo_samples": num_elbo_samples},
         ),
+        "elbo_calibrated": ModelSpec(
+            key="elbo_calibrated",
+            model_label=f"MC ELBO low-observation var {elbo_low_observation_weight:g}",
+            objective_label=f"elbo_edge_mlp_low_obs_{elbo_low_observation_weight:g}".replace(
+                ".", "p"
+            ),
+            config_path=Path("experiments/linear_gaussian/02_elbo_edge_mlp.yaml"),
+            steps=steps,
+            training_overrides={
+                "steps": steps,
+                "num_elbo_samples": num_elbo_samples,
+                "elbo_low_observation_variance_ratio_weight": elbo_low_observation_weight,
+            },
+        ),
         "direct_closed_form": ModelSpec(
             key="direct_closed_form",
             model_label="direct closed-form ELBO",
@@ -194,7 +215,7 @@ def _parse_ints(value: str, *, name: str) -> list[int]:
 
 def _parse_model_keys(value: str) -> list[str]:
     keys = [item.strip() for item in value.split(",") if item.strip()]
-    specs = _model_specs(1, 1, 0.1)
+    specs = _model_specs(1, 1, 0.1, 1.0)
     unknown = sorted(set(keys) - set(specs))
     if unknown:
         raise ValueError(f"Unknown --models entries: {', '.join(unknown)}")
