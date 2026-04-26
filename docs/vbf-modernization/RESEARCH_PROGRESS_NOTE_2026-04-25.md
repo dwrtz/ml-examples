@@ -734,3 +734,58 @@ with exact/frozen controls included where relevant. For reporting, randomized
 self-fed should be the main supervised generalization baseline; calibrated ELBO
 remains an unsupervised baseline but still needs a better regime-aware
 calibration objective.
+
+## 19. Full randomized-Q/R generalization sweep
+
+The full randomized-Q/R sweep was run with five seeds and 3000 training steps:
+
+```text
+outputs/linear_gaussian_random_qr_generalization_full/
+```
+
+Models:
+
+- randomized frozen marginal backward MLP
+- randomized calibrated self-fed supervised MLP
+- randomized calibrated MC ELBO
+
+Selected rows:
+
+| Model | eval Q | eval R | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL | oracle pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| frozen marginal | 0.03 | 0.03 | 0.000000 | 0.153616 | -0.192878 | 0.900346 | 1.000011 | 0.004960 | 0.004960 |
+| randomized self-fed | 0.03 | 0.03 | 0.026137 | 0.147090 | -0.166026 | 0.899756 | 1.304517 | 0.020808 | 0.004960 |
+| randomized ELBO | 0.03 | 0.03 | 0.156344 | 0.429335 | -0.035499 | 0.845390 | 0.954355 | 0.069896 | 0.004960 |
+| frozen marginal | 0.03 | 0.3 | 0.000000 | 0.128860 | 0.461248 | 0.899919 | 1.000011 | 0.941608 | 0.941608 |
+| randomized self-fed | 0.03 | 0.3 | 0.018619 | 0.102169 | 0.479473 | 0.899304 | 0.992932 | 0.949524 | 0.941608 |
+| randomized ELBO | 0.03 | 0.3 | 0.139624 | 0.257720 | 0.602471 | 0.820251 | 0.799132 | 0.970763 | 0.941608 |
+| frozen marginal | 0.1 | 0.1 | 0.000000 | 0.103180 | 0.401983 | 0.900220 | 1.000006 | 0.600858 | 0.600858 |
+| randomized self-fed | 0.1 | 0.1 | 0.015590 | 0.086556 | 0.417646 | 0.895890 | 1.055674 | 0.609016 | 0.600858 |
+| randomized ELBO | 0.1 | 0.1 | 0.066643 | 0.244002 | 0.468429 | 0.870190 | 0.938663 | 0.626521 | 0.600858 |
+| frozen marginal | 0.3 | 0.3 | 0.000000 | 0.102455 | 0.943551 | 0.900334 | 1.000003 | 1.144913 | 1.144913 |
+| randomized self-fed | 0.3 | 0.3 | 0.018454 | 0.090100 | 0.961464 | 0.883822 | 0.919132 | 1.151564 | 1.144913 |
+| randomized ELBO | 0.3 | 0.3 | 0.038885 | 0.197566 | 0.982444 | 0.894307 | 1.023561 | 1.157391 | 1.144913 |
+
+Interpretation:
+
+- The five-seed run confirms the pilot conclusion: Q/R conditioning makes the
+  learned backward conditional generalize across regimes. Frozen marginal edge
+  KL is now around `0.10-0.15` across all five evaluated regimes, instead of
+  exploding in fixed-regime transfer.
+- Randomized calibrated self-fed supervision is the strongest learned
+  Q/R-conditioned baseline. It keeps filter KL below `0.03`, predictive NLL
+  close to oracle, and edge KL around `0.09-0.15`.
+- Randomized calibrated ELBO improves over the pilot at 3000 steps, but it is
+  still weaker than self-fed supervision. Its main remaining failure is
+  under-dispersion in the low-process/high-observation regime
+  (`Q=0.03, R=0.3`, variance ratio about `0.80`, coverage about `0.82`).
+- Self-fed calibration is no longer uniformly perfect under randomized Q/R:
+  it over-disperses at `Q=0.03, R=0.03` and `Q=0.3, R=0.03`, but preserves good
+  coverage and predictive metrics. A regime-local variance calibration penalty
+  would be cleaner than the current global mean-ratio penalty.
+
+The scalar linear-Gaussian story is now strong enough to report three axes:
+weak observability, fixed-to-held-out Q/R transfer, and randomized
+Q/R-conditioned generalization. The next research question is whether the ELBO
+calibration penalty should be regime-local over Q/R as well as time-local over
+weak observations.

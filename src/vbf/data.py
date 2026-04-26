@@ -110,7 +110,7 @@ def broadcast_param_like(value: Any, target: jax.Array) -> jax.Array:
         return array
     if array.ndim == 1 and target.ndim >= 2 and array.shape[0] == target.shape[-2]:
         shape = (1,) * (target.ndim - 2) + (array.shape[0], 1)
-        return jnp.reshape(array, shape)
+        return jnp.broadcast_to(jnp.reshape(array, shape), target.shape)
     return jnp.broadcast_to(array, target.shape)
 
 
