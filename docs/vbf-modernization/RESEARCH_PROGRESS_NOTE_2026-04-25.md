@@ -859,3 +859,58 @@ regime-local weight `1` at five seeds and 3000 steps. If the 1000-step pattern
 holds, use regime-local self-fed as the default supervised Q/R generalization
 baseline and regime-local calibrated ELBO as the strongest unsupervised Q/R
 baseline.
+
+## 21. Regime-local randomized-Q/R 3000-step confirmation
+
+The regime-local calibration confirmation was run at five seeds and 3000 steps:
+
+```text
+outputs/linear_gaussian_random_qr_calibration_3000_regime_w1/
+```
+
+This uses the same randomized train grid and fixed eval regimes as the previous
+full randomized-Q/R sweep, with regime-local variance weight `1`.
+
+Comparison against the previous global-calibrated randomized-Q/R rows:
+
+| Model | eval Q | eval R | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| self-fed global | 0.03 | 0.03 | 0.026137 | 0.147090 | -0.166026 | 0.899756 | 1.304517 | 0.020808 |
+| self-fed regime | 0.03 | 0.03 | 0.023709 | 0.147670 | -0.168295 | 0.895707 | 1.015044 | 0.018927 |
+| self-fed global | 0.1 | 0.1 | 0.015590 | 0.086556 | 0.417646 | 0.895890 | 1.055674 | 0.609016 |
+| self-fed regime | 0.1 | 0.1 | 0.014042 | 0.088152 | 0.416249 | 0.894421 | 0.999319 | 0.607951 |
+| self-fed global | 0.3 | 0.03 | 0.013693 | 0.114349 | 0.146933 | 0.897778 | 1.221880 | 0.536637 |
+| self-fed regime | 0.3 | 0.03 | 0.013232 | 0.118681 | 0.146506 | 0.894499 | 1.010729 | 0.536225 |
+| self-fed global | 0.3 | 0.3 | 0.018454 | 0.090100 | 0.961464 | 0.883822 | 0.919132 | 1.151564 |
+| self-fed regime | 0.3 | 0.3 | 0.014822 | 0.087604 | 0.957915 | 0.892554 | 0.992193 | 1.150463 |
+| ELBO low-observation | 0.03 | 0.3 | 0.139624 | 0.257720 | 0.602471 | 0.820251 | 0.799132 | 0.970763 |
+| ELBO regime | 0.03 | 0.3 | 0.090890 | 0.199418 | 0.553383 | 0.849805 | 0.972514 | 0.965394 |
+| ELBO low-observation | 0.1 | 0.1 | 0.066643 | 0.244002 | 0.468429 | 0.870190 | 0.938663 | 0.626521 |
+| ELBO regime | 0.1 | 0.1 | 0.058816 | 0.219568 | 0.461048 | 0.880180 | 0.989530 | 0.625405 |
+| ELBO low-observation | 0.3 | 0.3 | 0.038885 | 0.197566 | 0.982444 | 0.894307 | 1.023561 | 1.157391 |
+| ELBO regime | 0.3 | 0.3 | 0.036679 | 0.187863 | 0.980429 | 0.894177 | 0.998269 | 1.157446 |
+
+Interpretation:
+
+- Regime-local self-fed should replace global calibrated self-fed for
+  randomized-Q/R reports. It removes the variance-ratio extremes (`1.30` to
+  `1.02` at low Q/R and `1.22` to `1.01` at high-Q/low-R) while keeping filter
+  KL, state NLL, and predictive NLL at least as good.
+- Regime-local ELBO should replace low-observation-only calibrated ELBO for
+  randomized-Q/R reports. It fixes the main under-dispersed mismatch case:
+  `Q=0.03, R=0.3` improves from variance ratio `0.80` and coverage `0.82` to
+  variance ratio `0.97` and coverage `0.85`, with better filter KL, edge KL,
+  state NLL, and predictive NLL.
+- ELBO still trails regime-local self-fed, but it is now a credible
+  unsupervised Q/R-conditioned baseline rather than a calibration failure.
+
+Recommended default randomized-Q/R table rows:
+
+1. frozen marginal backward MLP
+2. regime-local self-fed supervised MLP
+3. regime-local calibrated MC ELBO
+
+At this point, the scalar linear-Gaussian benchmark has enough evidence for a
+coherent report: exact/frozen controls, weak-observability stress tests,
+fixed-Q/R transfer, randomized-Q/R conditioning, and calibrated ELBO vs
+self-fed supervision.
