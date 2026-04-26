@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
+from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,11 @@ def kalman_filter_scalar(batch: EpisodeBatch, params: LinearGaussianParams) -> K
         x_t, y_t = obs
 
         pred_mean = mean_prev
-        pred_var = var_prev + params.q
+        q = broadcast_param_like(params.q, x_t)
+        r = broadcast_param_like(params.r, x_t)
+        pred_var = var_prev + q
         predictive_mean = x_t * pred_mean
-        predictive_var = x_t**2 * pred_var + params.r
+        predictive_var = x_t**2 * pred_var + r
         gain = pred_var * x_t / predictive_var
         filter_mean = pred_mean + gain * (y_t - predictive_mean)
         filter_var = (1.0 - gain * x_t) * pred_var
@@ -97,9 +99,11 @@ def kalman_edge_posterior_scalar(
         mean_prev, var_prev = carry
         x_t, y_t = obs
 
-        prior_var_zt = var_prev + params.q
+        q = broadcast_param_like(params.q, x_t)
+        r = broadcast_param_like(params.r, x_t)
+        prior_var_zt = var_prev + q
         prior_cov = var_prev
-        innovation_var = x_t**2 * prior_var_zt + params.r
+        innovation_var = x_t**2 * prior_var_zt + r
         innovation = y_t - x_t * mean_prev
         gain_zt = prior_var_zt * x_t / innovation_var
         gain_z_tm1 = prior_cov * x_t / innovation_var
@@ -156,5 +160,7 @@ def _assert_batch_shapes(batch: EpisodeBatch) -> None:
 
 
 def _assert_positive_params(params: LinearGaussianParams) -> None:
-    if params.q <= 0 or params.r <= 0 or params.p0 <= 0:
+    if jnp.any(jnp.asarray(params.q) <= 0) or jnp.any(jnp.asarray(params.r) <= 0):
+        raise ValueError("q and r must be positive")
+    if params.p0 <= 0:
         raise ValueError("q, r, and p0 must be positive")

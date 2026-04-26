@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 
@@ -28,8 +29,8 @@ class LinearGaussianDataConfig:
 class LinearGaussianParams:
     """Scalar state-space parameters."""
 
-    q: float = 0.1
-    r: float = 0.1
+    q: Any = 0.1
+    r: Any = 0.1
     m0: float = 1.0
     p0: float = 10.0
 
@@ -59,7 +60,9 @@ def make_linear_gaussian_batch(
         raise ValueError("batch_size must be positive")
     if config.time_steps <= 0:
         raise ValueError("time_steps must be positive")
-    if params.q <= 0 or params.r <= 0 or params.p0 <= 0:
+    if jnp.any(jnp.asarray(params.q) <= 0) or jnp.any(jnp.asarray(params.r) <= 0):
+        raise ValueError("q and r must be positive")
+    if params.p0 <= 0:
         raise ValueError("q, r, and p0 must be positive")
 
     key = jax.random.PRNGKey(seed)
@@ -73,19 +76,42 @@ def make_linear_gaussian_batch(
         shape=(config.batch_size,),
         dtype=jnp.float64,
     )
-    innovations = jnp.sqrt(params.q) * jax.random.normal(
+    q = broadcast_param_like(params.q, x)
+    r = broadcast_param_like(params.r, x)
+    innovations = jnp.sqrt(q) * jax.random.normal(
         key_w,
         shape=(config.batch_size, config.time_steps),
         dtype=jnp.float64,
     )
     z = z_initial[:, None] + jnp.cumsum(innovations, axis=1)
-    y = x * z + jnp.sqrt(params.r) * jax.random.normal(
+    y = x * z + jnp.sqrt(r) * jax.random.normal(
         key_v,
         shape=(config.batch_size, config.time_steps),
         dtype=jnp.float64,
     )
 
     return EpisodeBatch(x=x, y=y, z=z)
+
+
+def broadcast_param_like(value: Any, target: jax.Array) -> jax.Array:
+    """Broadcast a scalar or per-episode parameter to match a target array.
+
+    Per-episode vectors have shape `[batch]`. For batch-time arrays they are
+    reshaped to `[batch, 1]`; for sample-batch-time arrays they are reshaped to
+    `[1, batch, 1]`.
+    """
+
+    array = jnp.asarray(value, dtype=target.dtype)
+    if array.ndim == 0:
+        return jnp.broadcast_to(array, target.shape)
+    if array.shape == target.shape:
+        return array
+    if array.ndim == 1 and target.ndim == 1 and array.shape[0] == target.shape[0]:
+        return array
+    if array.ndim == 1 and target.ndim >= 2 and array.shape[0] == target.shape[-2]:
+        shape = (1,) * (target.ndim - 2) + (array.shape[0], 1)
+        return jnp.reshape(array, shape)
+    return jnp.broadcast_to(array, target.shape)
 
 
 def _make_x(config: LinearGaussianDataConfig, key: jax.Array) -> jax.Array:

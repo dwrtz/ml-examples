@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
+from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
 
 
 class PredictiveMoments(NamedTuple):
@@ -27,10 +27,12 @@ def linear_gaussian_predictive_from_filter(
     """Return `p(y_t | q^F_{t-1}, x_t)` under the scalar transition/measurement model."""
 
     prev_mean, prev_var = previous_filter_beliefs(filter_mean, filter_var, state_params)
-    pred_state_var = prev_var + state_params.q
+    q = broadcast_param_like(state_params.q, batch.x)
+    r = broadcast_param_like(state_params.r, batch.x)
+    pred_state_var = prev_var + q
     return PredictiveMoments(
         mean=batch.x * prev_mean,
-        var=batch.x**2 * pred_state_var + state_params.r,
+        var=batch.x**2 * pred_state_var + r,
     )
 
 

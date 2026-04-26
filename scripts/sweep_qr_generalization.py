@@ -225,7 +225,7 @@ def _evaluate_params(
     steps: int,
 ) -> Row:
     data_config = LinearGaussianDataConfig(**train_config["evaluation"]["data"])
-    state_params = LinearGaussianParams(**{**train_config["state_space"], "q": eval_q, "r": eval_r})
+    state_params = _make_eval_state_params(train_config["state_space"], eval_q, eval_r)
     eval_seed = int(seed) + int(train_config.get("evaluation", {}).get("seed_offset", 10_000))
     eval_num_batches = int(train_config.get("evaluation", {}).get("num_batches", 1))
     batch = _make_eval_batch(data_config, state_params, eval_seed, eval_num_batches)
@@ -326,6 +326,18 @@ def _make_train_config(
         "state_space": {**base_config["state_space"], "q": train_q, "r": train_r},
         "training": {**base_config["training"], **spec.training_overrides},
     }
+
+
+def _make_eval_state_params(
+    state_config: dict[str, Any],
+    eval_q: float,
+    eval_r: float,
+) -> LinearGaussianParams:
+    return LinearGaussianParams(
+        **{key: state_config[key] for key in ("m0", "p0") if key in state_config},
+        q=eval_q,
+        r=eval_r,
+    )
 
 
 def _load_params(path: Path) -> dict[str, jax.Array]:

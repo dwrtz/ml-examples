@@ -669,3 +669,68 @@ generalization. The next version should train on multiple Q/R pairs, and a
 proper randomized-regime model should condition the learned components on
 `log Q` and `log R` rather than relying on scalar parameters supplied only to
 the analytic update.
+
+## 18. Randomized-Q/R conditioning pilot
+
+The scalar linear-Gaussian benchmark now supports per-episode process and
+observation noise parameters. The MLP cells already had `log Q` and `log R`
+feature slots; the data generator, Kalman oracle, losses, predictive metrics,
+and trainer now accept batch-shaped Q/R vectors so a single training batch can
+mix regimes.
+
+The randomized-regime sweep entry point is:
+
+```text
+scripts/sweep_random_qr_generalization.py
+make sweep-random-qr-generalization
+```
+
+Pilot setup:
+
+- training Q grid: `[0.03, 0.1, 0.3]`
+- training R grid: `[0.03, 0.1, 0.3]`
+- three seeds, 1000 steps
+- fixed evaluation regimes: `0.03:0.03`, `0.1:0.1`, `0.3:0.3`,
+  `0.03:0.3`, and `0.3:0.03`
+
+Output:
+
+```text
+outputs/linear_gaussian_random_qr_generalization_pilot/
+```
+
+Selected rows:
+
+| Model | eval Q | eval R | filter KL | edge KL | state NLL | cov 90 | var ratio | pred NLL | oracle pred NLL |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| randomized self-fed | 0.03 | 0.03 | 0.017962 | 0.220882 | -0.171178 | 0.894911 | 1.109432 | 0.010555 | 0.002321 |
+| randomized ELBO | 0.03 | 0.03 | 0.199137 | 0.620946 | 0.011696 | 0.842733 | 0.891854 | 0.088488 | 0.002321 |
+| randomized self-fed | 0.1 | 0.1 | 0.014982 | 0.151882 | 0.420131 | 0.898112 | 1.040187 | 0.604203 | 0.598216 |
+| randomized ELBO | 0.1 | 0.1 | 0.107063 | 0.519779 | 0.513440 | 0.863146 | 0.926948 | 0.640042 | 0.598216 |
+| randomized self-fed | 0.3 | 0.3 | 0.020166 | 0.151962 | 0.966006 | 0.893636 | 0.980898 | 1.149068 | 1.142270 |
+| randomized ELBO | 0.3 | 0.3 | 0.070451 | 0.533528 | 1.018349 | 0.883464 | 1.014809 | 1.166158 | 1.142270 |
+| randomized self-fed | 0.03 | 0.3 | 0.025079 | 0.167610 | 0.490442 | 0.891439 | 1.033223 | 0.946371 | 0.938904 |
+| randomized ELBO | 0.03 | 0.3 | 0.443742 | 0.715924 | 0.906704 | 0.729980 | 0.704004 | 1.015059 | 0.938904 |
+| randomized self-fed | 0.3 | 0.03 | 0.009602 | 0.138165 | 0.143524 | 0.894185 | 1.016904 | 0.532121 | 0.529122 |
+| randomized ELBO | 0.3 | 0.03 | 0.055592 | 0.427771 | 0.190798 | 0.913310 | 1.176804 | 0.548758 | 0.529122 |
+
+Interpretation:
+
+- Randomized self-fed supervision gives the first clean Q/R-conditioned result.
+  Edge KL is much steadier across regimes than the fixed-regime self-fed model:
+  for example, the mismatched `Q=0.03, R=0.3` row drops from edge KL `4.81` in
+  fixed-regime transfer to `0.168`, while preserving near-oracle filtering and
+  predictive metrics.
+- Randomized self-fed also fixes the high-Q/R over-dispersion seen in fixed
+  transfer. At `Q=0.3, R=0.3`, variance ratio moves from about `1.23` to
+  `0.98`.
+- Randomized calibrated ELBO benefits from Q/R conditioning in some edge rows,
+  but remains substantially weaker than self-fed supervision and is unstable in
+  the low-process/high-observation mismatch (`Q=0.03, R=0.3`), where coverage
+  falls to about `0.73`.
+
+The next useful run is a full five-seed randomized-Q/R sweep at 3000 steps,
+with exact/frozen controls included where relevant. For reporting, randomized
+self-fed should be the main supervised generalization baseline; calibrated ELBO
+remains an unsupervised baseline but still needs a better regime-aware
+calibration objective.

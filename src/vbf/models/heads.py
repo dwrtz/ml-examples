@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-from vbf.data import LinearGaussianParams  # noqa: E402
+from vbf.data import LinearGaussianParams, broadcast_param_like  # noqa: E402
 from vbf.predictive import PredictiveMoments  # noqa: E402
 
 
@@ -56,8 +56,8 @@ def predictive_head_features(
             prev_filter_mean,
             jnp.log(prev_filter_var),
             x_t,
-            jnp.full_like(x_t, jnp.log(state_params.q)),
-            jnp.full_like(x_t, jnp.log(state_params.r)),
+            jnp.log(broadcast_param_like(state_params.q, x_t)),
+            jnp.log(broadcast_param_like(state_params.r, x_t)),
         ),
         axis=-1,
     )
@@ -110,8 +110,10 @@ def _analytic_predictive(
     x_t: jax.Array,
     state_params: LinearGaussianParams,
 ) -> PredictiveMoments:
-    pred_state_var = prev_filter_var + state_params.q
+    q = broadcast_param_like(state_params.q, x_t)
+    r = broadcast_param_like(state_params.r, x_t)
+    pred_state_var = prev_filter_var + q
     return PredictiveMoments(
         mean=x_t * prev_filter_mean,
-        var=x_t**2 * pred_state_var + state_params.r,
+        var=x_t**2 * pred_state_var + r,
     )

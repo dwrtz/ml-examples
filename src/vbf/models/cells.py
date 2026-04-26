@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
+from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
 
 
 class StructuredMLPOutputs(NamedTuple):
@@ -284,20 +284,22 @@ def structured_mlp_step(
             jnp.log(prev_var),
             x_t,
             y_t,
-            jnp.full_like(x_t, jnp.log(state_params.q)),
-            jnp.full_like(x_t, jnp.log(state_params.r)),
+            jnp.log(broadcast_param_like(state_params.q, x_t)),
+            jnp.log(broadcast_param_like(state_params.r, x_t)),
         ),
         axis=-1,
     )
     hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
     raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
-    pred_var = prev_var + state_params.q
+    q = broadcast_param_like(state_params.q, x_t)
+    r = broadcast_param_like(state_params.r, x_t)
+    pred_var = prev_var + q
     innovation = y_t - x_t * prev_mean
-    innovation_var = x_t**2 * pred_var + state_params.r
+    innovation_var = x_t**2 * pred_var + r
     base_gain = pred_var * x_t / innovation_var
     gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 0])
     filter_mean = prev_mean + gain_scale * base_gain * innovation
-    base_filter_var = pred_var * state_params.r / innovation_var
+    base_filter_var = pred_var * r / innovation_var
     filter_var = base_filter_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)) + min_var
     backward_a = raw[..., 2]
 
@@ -405,8 +407,8 @@ def _mlp_features(
             jnp.log(prev_var),
             x_t,
             y_t,
-            jnp.full_like(x_t, jnp.log(state_params.q)),
-            jnp.full_like(x_t, jnp.log(state_params.r)),
+            jnp.log(broadcast_param_like(state_params.q, x_t)),
+            jnp.log(broadcast_param_like(state_params.r, x_t)),
         ),
         axis=-1,
     )
@@ -423,13 +425,15 @@ def _outputs_from_raw(
     *,
     min_var: float,
 ) -> StructuredMLPOutputs:
-    pred_var = prev_var + state_params.q
+    q = broadcast_param_like(state_params.q, x_t)
+    r = broadcast_param_like(state_params.r, x_t)
+    pred_var = prev_var + q
     innovation = y_t - x_t * prev_mean
-    innovation_var = x_t**2 * pred_var + state_params.r
+    innovation_var = x_t**2 * pred_var + r
     base_gain = pred_var * x_t / innovation_var
     gain_scale = 2.0 * jax.nn.sigmoid(raw_filter[..., 0])
     filter_mean = prev_mean + gain_scale * base_gain * innovation
-    base_filter_var = pred_var * state_params.r / innovation_var
+    base_filter_var = pred_var * r / innovation_var
     filter_var = base_filter_var * jnp.exp(jnp.clip(raw_filter[..., 1], -5.0, 5.0)) + min_var
     backward_a = raw_backward[..., 0]
 

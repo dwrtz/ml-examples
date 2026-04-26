@@ -10,7 +10,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
+from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
 from vbf.kalman import EdgeOracleOutputs  # noqa: E402
 from vbf.models.cells import (  # noqa: E402
     StructuredMLPOutputs,
@@ -233,7 +233,7 @@ def transition_consistency_penalty(
 
     residual_mean = (1.0 - outputs.backward_a) * outputs.filter_mean - outputs.backward_b
     residual_var = (1.0 - outputs.backward_a) ** 2 * outputs.filter_var + outputs.backward_var
-    q = jnp.asarray(state_params.q, dtype=outputs.filter_mean.dtype)
+    q = broadcast_param_like(state_params.q, outputs.filter_mean)
     mean_penalty = residual_mean**2 / q
     second_moment = residual_var + residual_mean**2
     scale_penalty = (second_moment / q - 1.0) ** 2
@@ -416,12 +416,12 @@ def edge_elbo_terms_from_factors(
     log_likelihood = _normal_log_prob(
         batch.y[None, ...],
         batch.x[None, ...] * z_t,
-        jnp.asarray(state_params.r, dtype=z_t.dtype),
+        broadcast_param_like(state_params.r, z_t),
     )
     log_transition = _normal_log_prob(
         z_t,
         z_tm1,
-        jnp.asarray(state_params.q, dtype=z_t.dtype),
+        broadcast_param_like(state_params.q, z_t),
     )
     log_prev_filter = _normal_log_prob(
         z_tm1,
@@ -481,11 +481,13 @@ def edge_elbo_closed_form_terms_from_factors(
     z_t_z_tm1_cov = backward_a * filter_var
 
     likelihood_var_term = (batch.y - batch.x * filter_mean) ** 2 + batch.x**2 * filter_var
-    log_likelihood = _expected_normal_log_prob(likelihood_var_term, state_params.r)
+    r = broadcast_param_like(state_params.r, likelihood_var_term)
+    log_likelihood = _expected_normal_log_prob(likelihood_var_term, r)
 
     residual_mean = filter_mean - z_tm1_mean
     residual_var = filter_var + z_tm1_var - 2.0 * z_t_z_tm1_cov
-    log_transition = _expected_normal_log_prob(residual_mean**2 + residual_var, state_params.q)
+    q = broadcast_param_like(state_params.q, residual_mean)
+    log_transition = _expected_normal_log_prob(residual_mean**2 + residual_var, q)
 
     prev_residual = (z_tm1_mean - prev_filter_mean) ** 2 + z_tm1_var
     log_prev_filter = _expected_normal_log_prob(prev_residual, prev_filter_var)

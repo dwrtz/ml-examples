@@ -82,7 +82,11 @@ def main() -> None:
         raise ValueError(f"Unsupported linear-Gaussian training model: {config['model']}")
 
     data_config = LinearGaussianDataConfig(**config["data"])
-    state_params = LinearGaussianParams(**config["state_space"])
+    state_params = _make_state_params(
+        config["state_space"],
+        batch_size=data_config.batch_size,
+        seed=int(config["seed"]),
+    )
     training_config = config["training"]
     evaluation_config = config.get("evaluation", {})
     min_var = float(training_config.get("min_var", 1e-6))
@@ -108,8 +112,14 @@ def main() -> None:
     )
     eval_num_batches = int(evaluation_config.get("num_batches", 1))
     eval_seed_start = int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000))
-    eval_batch = _make_eval_batch(eval_data_config, state_params, eval_seed_start, eval_num_batches)
-    eval_oracle = kalman_edge_posterior_scalar(eval_batch, state_params)
+    eval_state_params = _make_eval_state_params(config, state_params)
+    eval_batch = _make_eval_batch(
+        eval_data_config,
+        eval_state_params,
+        eval_seed_start,
+        eval_num_batches,
+    )
+    eval_oracle = kalman_edge_posterior_scalar(eval_batch, eval_state_params)
     params = _init_model_params(objective, config, training_config)
     opt_state = init_adam(params)
 
@@ -194,7 +204,7 @@ def main() -> None:
             history.append((step, float(loss_value)))
 
     final_loss = float(loss_fn(params, jax.random.PRNGKey(config["seed"] + 3)))
-    outputs = _run_model_filter(params, objective, eval_batch, state_params, min_var=min_var)
+    outputs = _run_model_filter(params, objective, eval_batch, eval_state_params, min_var=min_var)
     pred_edge_mean, pred_edge_cov = edge_mean_cov_from_outputs(outputs)
     filter_kl_bt = scalar_gaussian_kl(
         eval_oracle.filter_mean,
@@ -226,13 +236,13 @@ def main() -> None:
         outputs.filter_mean,
         outputs.filter_var,
         eval_batch,
-        state_params,
+        eval_state_params,
     )
     oracle_predictive = linear_gaussian_predictive_from_filter(
         eval_oracle.filter_mean,
         eval_oracle.filter_var,
         eval_batch,
-        state_params,
+        eval_state_params,
     )
     predictive_nll_bt = scalar_gaussian_nll(
         eval_batch.y,
@@ -274,7 +284,7 @@ def main() -> None:
         elbo_terms = edge_elbo_terms(
             params,
             eval_batch,
-            state_params,
+            eval_state_params,
             jax.random.PRNGKey(config["seed"] + 4),
             num_samples=int(training_config.get("num_elbo_samples", 8)),
             min_var=min_var,
@@ -283,19 +293,19 @@ def main() -> None:
         oracle_elbo_terms = oracle_edge_elbo_terms(
             eval_oracle,
             eval_batch,
-            state_params,
+            eval_state_params,
             jax.random.PRNGKey(config["seed"] + 5),
             num_samples=int(training_config.get("num_elbo_samples", 8)),
         )
     closed_form_elbo_terms = edge_elbo_closed_form_terms_from_outputs(
         outputs,
         eval_batch,
-        state_params,
+        eval_state_params,
     )
     oracle_closed_form_elbo_terms = oracle_edge_elbo_closed_form_terms(
         eval_oracle,
         eval_batch,
-        state_params,
+        eval_state_params,
     )
 
     output_dir = Path(config.get("output_dir", "outputs/linear_gaussian_supervised_edge_mlp"))
@@ -642,6 +652,49 @@ def _freeze_structured_filter_head_grads(
 
 def _write_config(path: Path, config: dict) -> None:
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def _make_state_params(
+    state_config: dict,
+    *,
+    batch_size: int,
+    seed: int,
+) -> LinearGaussianParams:
+    base = _linear_gaussian_param_config(state_config)
+    q_values = state_config.get("random_q_values")
+    r_values = state_config.get("random_r_values")
+    if q_values is None and r_values is None:
+        return LinearGaussianParams(**base)
+    if q_values is None or r_values is None:
+        raise ValueError("random_q_values and random_r_values must be specified together")
+
+    rng = np.random.default_rng(seed + int(state_config.get("random_seed_offset", 50_000)))
+    base["q"] = rng.choice(np.asarray(q_values, dtype=np.float64), size=batch_size)
+    base["r"] = rng.choice(np.asarray(r_values, dtype=np.float64), size=batch_size)
+    return LinearGaussianParams(**base)
+
+
+def _make_eval_state_params(
+    config: dict, train_state_params: LinearGaussianParams
+) -> LinearGaussianParams:
+    state_config = {
+        **_scalarized_state_params(train_state_params),
+        **config.get("evaluation", {}).get("state_space", {}),
+    }
+    return LinearGaussianParams(**_linear_gaussian_param_config(state_config))
+
+
+def _linear_gaussian_param_config(config: dict) -> dict:
+    return {key: config[key] for key in ("q", "r", "m0", "p0") if key in config}
+
+
+def _scalarized_state_params(params: LinearGaussianParams) -> dict:
+    return {
+        "q": float(np.mean(np.asarray(params.q))),
+        "r": float(np.mean(np.asarray(params.r))),
+        "m0": params.m0,
+        "p0": params.p0,
+    }
 
 
 def _make_eval_batch(
