@@ -56,16 +56,38 @@ def main() -> None:
     reference_variance_ratio_weight = float(
         training_config.get("reference_variance_ratio_weight", 0.0)
     )
+    reference_time_variance_ratio_weight = float(
+        training_config.get("reference_time_variance_ratio_weight", 0.0)
+    )
+    reference_low_observation_variance_ratio_weight = float(
+        training_config.get("reference_low_observation_variance_ratio_weight", 0.0)
+    )
+    low_observation_eps = float(training_config.get("low_observation_eps", 1e-3))
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_reference = None
-    if reference_variance_ratio_weight != 0.0:
+    if (
+        reference_variance_ratio_weight != 0.0
+        or reference_time_variance_ratio_weight != 0.0
+        or reference_low_observation_variance_ratio_weight != 0.0
+    ):
         train_reference = nonlinear_grid_filter(
             train_batch,
             state_params,
             data_config=data_config,
             grid_config=reference_config,
         )
+    reference_mean_filter_var = (
+        jnp.mean(train_reference.filter_var) if train_reference is not None else None
+    )
+    reference_filter_var_t = (
+        jnp.mean(train_reference.filter_var, axis=0) if train_reference is not None else None
+    )
+    low_observation_weights_t = None
+    if train_reference is not None:
+        mean_x2_t = jnp.mean(train_batch.x**2, axis=0)
+        low_observation_weights_t = 1.0 / (mean_x2_t + low_observation_eps)
+        low_observation_weights_t = low_observation_weights_t / jnp.mean(low_observation_weights_t)
     eval_data_config = NonlinearDataConfig(**{**config["data"], **evaluation_config.get("data", {})})
     eval_batch = make_nonlinear_batch(
         eval_data_config,
@@ -100,10 +122,24 @@ def main() -> None:
             )
         )
         if reference_variance_ratio_weight != 0.0:
-            if train_reference is None:
-                raise ValueError("train_reference is required for reference calibration")
-            ratio = jnp.mean(outputs.filter_var) / jnp.mean(train_reference.filter_var)
+            if reference_mean_filter_var is None:
+                raise ValueError("reference_mean_filter_var is required for reference calibration")
+            ratio = jnp.mean(outputs.filter_var) / reference_mean_filter_var
             loss = loss + reference_variance_ratio_weight * jnp.log(ratio) ** 2
+        if reference_time_variance_ratio_weight != 0.0:
+            if reference_filter_var_t is None:
+                raise ValueError("reference_filter_var_t is required for reference calibration")
+            learned_t = jnp.mean(outputs.filter_var, axis=0)
+            loss = loss + reference_time_variance_ratio_weight * jnp.mean(
+                jnp.log(learned_t / reference_filter_var_t) ** 2
+            )
+        if reference_low_observation_variance_ratio_weight != 0.0:
+            if reference_filter_var_t is None or low_observation_weights_t is None:
+                raise ValueError("time-local targets are required for reference calibration")
+            learned_t = jnp.mean(outputs.filter_var, axis=0)
+            loss = loss + reference_low_observation_variance_ratio_weight * jnp.mean(
+                low_observation_weights_t * jnp.log(learned_t / reference_filter_var_t) ** 2
+            )
         return loss
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -168,6 +204,11 @@ def main() -> None:
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
+        "reference_time_variance_ratio_weight": reference_time_variance_ratio_weight,
+        "reference_low_observation_variance_ratio_weight": (
+            reference_low_observation_variance_ratio_weight
+        ),
+        "low_observation_eps": low_observation_eps,
         "final_loss": final_loss,
         "state_rmse": float(rmse_global(outputs.filter_mean, eval_batch.z)),
         "reference_state_rmse": float(rmse_global(reference.filter_mean, eval_batch.z)),
