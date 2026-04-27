@@ -112,10 +112,22 @@ def _selected_model_specs(
             objective="direct_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
         ),
+        "structured_elbo": ModelSpec(
+            key="structured_elbo",
+            label="EKF-residualized nonlinear MC ELBO",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+        ),
         "direct_elbo_ref_calibrated": ModelSpec(
             key="direct_elbo_ref_calibrated",
             label="direct nonlinear MC ELBO + reference variance calibration",
             objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=reference_variance_ratio_weight,
+        ),
+        "structured_elbo_ref_calibrated": ModelSpec(
+            key="structured_elbo_ref_calibrated",
+            label="EKF-residualized nonlinear MC ELBO + reference variance calibration",
+            objective="structured_elbo_sine_mlp",
             reference_variance_ratio_weight=reference_variance_ratio_weight,
         ),
     }

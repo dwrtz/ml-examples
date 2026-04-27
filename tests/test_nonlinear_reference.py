@@ -1,6 +1,8 @@
+import jax
 import jax.numpy as jnp
 
 from vbf.data import LinearGaussianParams
+from vbf.models.cells import init_structured_mlp_params
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
@@ -8,6 +10,7 @@ from vbf.nonlinear import (
     nonlinear_grid_filter,
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
+    run_nonlinear_structured_mlp_filter,
 )
 
 
@@ -105,3 +108,23 @@ def test_x_sine_predictive_moments_are_finite_and_positive() -> None:
     assert var.shape == (3, 5)
     assert jnp.all(jnp.isfinite(mean))
     assert jnp.all(var > 0.0)
+
+
+def test_nonlinear_structured_mlp_filter_outputs_positive_variances() -> None:
+    config = NonlinearDataConfig(batch_size=3, time_steps=7, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=127)
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(128), hidden_dim=8)
+
+    outputs = run_nonlinear_structured_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        observation="x_sine",
+    )
+
+    assert outputs.filter_mean.shape == (3, 7)
+    assert outputs.filter_var.shape == (3, 7)
+    assert outputs.backward_var.shape == (3, 7)
+    assert jnp.all(outputs.filter_var > 0.0)
+    assert jnp.all(outputs.backward_var > 0.0)

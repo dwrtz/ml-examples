@@ -18,6 +18,7 @@ from vbf.data import (  # noqa: E402
     LinearGaussianParams,
     make_observation_covariates,
 )
+from vbf.models.cells import StructuredMLPOutputs, _mlp_features  # noqa: E402
 
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
@@ -212,6 +213,82 @@ def nonlinear_predictive_moments_from_filter(
     mean_sin_sq = 0.5 * (1.0 - mean_cos_2z)
     var_sin = jnp.maximum(mean_sin_sq - mean_sin**2, 0.0)
     return x * mean_sin, x**2 * var_sin + params.r
+
+
+def run_nonlinear_structured_mlp_filter(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    observation: str = "x_sine",
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Run an EKF-residualized strict nonlinear filter over batch-major episodes."""
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array]):
+        prev_mean, prev_var = carry
+        x_t, y_t = obs
+        outputs = nonlinear_structured_mlp_step(
+            mlp_params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            observation=observation,
+            min_var=min_var,
+        )
+        return (outputs.filter_mean, outputs.filter_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
+    return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def nonlinear_structured_mlp_step(
+    mlp_params: dict[str, jax.Array],
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    observation: str = "x_sine",
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Compute one EKF-residualized nonlinear filter update."""
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported structured nonlinear observation: {observation}")
+
+    features = _mlp_features(prev_mean, prev_var, x_t, y_t, state_params)
+    hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
+    raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    pred_var = prev_var + state_params.q
+    obs_mean = x_t * jnp.sin(prev_mean)
+    obs_jacobian = x_t * jnp.cos(prev_mean)
+    innovation = y_t - obs_mean
+    innovation_var = obs_jacobian**2 * pred_var + state_params.r
+    base_gain = pred_var * obs_jacobian / innovation_var
+    gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 0])
+    filter_mean = prev_mean + gain_scale * base_gain * innovation
+    base_filter_var = pred_var * state_params.r / innovation_var
+    filter_var = base_filter_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)) + min_var
+    backward_a = raw[..., 2]
+    return StructuredMLPOutputs(
+        filter_mean=filter_mean,
+        filter_var=filter_var,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * filter_mean + raw[..., 3],
+        backward_var=jax.nn.softplus(raw[..., 4]) + min_var,
+    )
 
 
 def _normal_log_prob(

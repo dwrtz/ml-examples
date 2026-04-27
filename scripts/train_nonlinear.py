@@ -17,6 +17,7 @@ from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
     init_direct_mlp_params,
+    init_structured_mlp_params,
     run_direct_mlp_filter,
 )
 from vbf.nonlinear import (
@@ -26,12 +27,13 @@ from vbf.nonlinear import (
     nonlinear_grid_filter,
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
+    run_nonlinear_structured_mlp_filter,
 )
 from vbf.train import adam_update, init_adam
 
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
-SUPPORTED_MODELS = {"direct_elbo_sine_mlp"}
+SUPPORTED_MODELS = {"direct_elbo_sine_mlp", "structured_elbo_sine_mlp"}
 
 
 def main() -> None:
@@ -71,17 +73,20 @@ def main() -> None:
         seed=int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000)),
     )
 
-    params = init_direct_mlp_params(
+    params = _init_model_params(
+        str(config["model"]),
         jax.random.PRNGKey(int(config["seed"]) + 1),
         hidden_dim=int(training_config["hidden_dim"]),
     )
     opt_state = init_adam(params)
 
     def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
-        outputs = run_direct_mlp_filter(
+        outputs = _run_model_filter(
+            str(config["model"]),
             current_params,
             train_batch,
             state_params,
+            observation=data_config.observation,
             min_var=min_var,
         )
         loss = -jnp.mean(
@@ -117,7 +122,14 @@ def main() -> None:
             history.append((step, float(loss_value)))
 
     final_loss = float(loss_fn(params, jax.random.PRNGKey(int(config["seed"]) + 3)))
-    outputs = run_direct_mlp_filter(params, eval_batch, state_params, min_var=min_var)
+    outputs = _run_model_filter(
+        str(config["model"]),
+        params,
+        eval_batch,
+        state_params,
+        observation=eval_data_config.observation,
+        min_var=min_var,
+    )
     reference = nonlinear_grid_filter(
         eval_batch,
         state_params,
@@ -213,6 +225,37 @@ def main() -> None:
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
     print(f"Wrote {summary_path}")
+
+
+def _init_model_params(
+    model: str,
+    key: jax.Array,
+    *,
+    hidden_dim: int,
+) -> dict[str, jax.Array]:
+    if model == "structured_elbo_sine_mlp":
+        return init_structured_mlp_params(key, hidden_dim=hidden_dim)
+    return init_direct_mlp_params(key, hidden_dim=hidden_dim)
+
+
+def _run_model_filter(
+    model: str,
+    params: dict[str, jax.Array],
+    batch,
+    state_params: LinearGaussianParams,
+    *,
+    observation: str,
+    min_var: float,
+):
+    if model == "structured_elbo_sine_mlp":
+        return run_nonlinear_structured_mlp_filter(
+            params,
+            batch,
+            state_params,
+            observation=observation,
+            min_var=min_var,
+        )
+    return run_direct_mlp_filter(params, batch, state_params, min_var=min_var)
 
 
 def _nonlinear_edge_elbo(
