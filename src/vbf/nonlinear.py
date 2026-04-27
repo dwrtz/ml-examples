@@ -54,6 +54,14 @@ class NonlinearReferenceOutputs(NamedTuple):
     predictive_var: jax.Array
 
 
+class NonlinearReferenceShapeOutputs(NamedTuple):
+    entropy: jax.Array
+    normalized_entropy: jax.Array
+    peak_count: jax.Array
+    max_mass: jax.Array
+    credible_width_90: jax.Array
+
+
 def make_nonlinear_batch(
     config: NonlinearDataConfig,
     params: LinearGaussianParams,
@@ -170,6 +178,86 @@ def nonlinear_grid_filter(
     init_log_mass = jnp.broadcast_to(prior_log_mass[None, :], (batch.x.shape[0], grid.shape[0]))
     _, outputs = jax.lax.scan(step, init_log_mass, (x_tb, y_tb))
     return NonlinearReferenceOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def nonlinear_grid_filter_shape_diagnostics(
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    data_config: NonlinearDataConfig,
+    grid_config: GridReferenceConfig = GridReferenceConfig(),
+    peak_fraction: float = 0.1,
+) -> NonlinearReferenceShapeOutputs:
+    """Return grid posterior shape diagnostics for the nonlinear reference filter."""
+
+    if grid_config.num_grid < 3:
+        raise ValueError("num_grid must be at least 3")
+    if grid_config.grid_max <= grid_config.grid_min:
+        raise ValueError("grid_max must be greater than grid_min")
+    if peak_fraction <= 0.0:
+        raise ValueError("peak_fraction must be positive")
+
+    grid = jnp.linspace(
+        grid_config.grid_min,
+        grid_config.grid_max,
+        grid_config.num_grid,
+        dtype=jnp.float64,
+    )
+    dz = (grid_config.grid_max - grid_config.grid_min) / (grid_config.num_grid - 1)
+    log_dz = jnp.log(dz)
+    prior_log_mass = _normal_log_prob(grid, params.m0, params.p0) + log_dz
+    prior_log_mass = prior_log_mass - jsp.special.logsumexp(prior_log_mass)
+    transition_log_mass = _normal_log_prob(grid[None, :], grid[:, None], params.q) + log_dz
+    transition_log_mass = transition_log_mass - jsp.special.logsumexp(
+        transition_log_mass,
+        axis=1,
+        keepdims=True,
+    )
+
+    x_tb = batch.x.T
+    y_tb = batch.y.T
+
+    def step(prev_log_mass: jax.Array, obs: tuple[jax.Array, jax.Array]):
+        x_t, y_t = obs
+        pred_log_mass = jsp.special.logsumexp(
+            prev_log_mass[:, :, None] + transition_log_mass[None, :, :],
+            axis=1,
+        )
+        obs_mean = nonlinear_observation_mean(
+            grid[None, :],
+            x_t[:, None],
+            data_config.observation,
+        )
+        filter_log_mass = pred_log_mass + _normal_log_prob(y_t[:, None], obs_mean, params.r)
+        filter_log_mass = filter_log_mass - jsp.special.logsumexp(
+            filter_log_mass,
+            axis=1,
+            keepdims=True,
+        )
+        filter_mass = jnp.exp(filter_log_mass)
+        entropy = -jnp.sum(filter_mass * filter_log_mass, axis=1)
+        max_mass = jnp.max(filter_mass, axis=1)
+        local_peak = (
+            (filter_mass[:, 1:-1] > filter_mass[:, :-2])
+            & (filter_mass[:, 1:-1] >= filter_mass[:, 2:])
+            & (filter_mass[:, 1:-1] >= peak_fraction * max_mass[:, None])
+        )
+        cdf = jnp.cumsum(filter_mass, axis=1)
+        lower_index = jnp.argmax(cdf >= 0.05, axis=1)
+        upper_index = jnp.argmax(cdf >= 0.95, axis=1)
+        credible_width_90 = grid[upper_index] - grid[lower_index]
+        outputs = (
+            entropy,
+            entropy / jnp.log(grid_config.num_grid),
+            jnp.sum(local_peak, axis=1),
+            max_mass,
+            credible_width_90,
+        )
+        return filter_log_mass, outputs
+
+    init_log_mass = jnp.broadcast_to(prior_log_mass[None, :], (batch.x.shape[0], grid.shape[0]))
+    _, outputs = jax.lax.scan(step, init_log_mass, (x_tb, y_tb))
+    return NonlinearReferenceShapeOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
 def nonlinear_observation_mean(

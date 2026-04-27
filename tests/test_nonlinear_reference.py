@@ -8,6 +8,7 @@ from vbf.nonlinear import (
     NonlinearDataConfig,
     make_nonlinear_batch,
     nonlinear_grid_filter,
+    nonlinear_grid_filter_shape_diagnostics,
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
@@ -89,6 +90,27 @@ def test_nonlinear_grid_filter_stays_finite_with_sharp_likelihood() -> None:
     assert jnp.all(jnp.isfinite(reference.filter_var))
     assert jnp.all(jnp.isfinite(reference.predictive_mean))
     assert jnp.all(jnp.isfinite(reference.predictive_var))
+
+
+def test_nonlinear_grid_filter_shape_diagnostics_are_finite() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=5, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=130)
+
+    shape = nonlinear_grid_filter_shape_diagnostics(
+        batch,
+        params,
+        data_config=config,
+        grid_config=GridReferenceConfig(grid_min=-8.0, grid_max=8.0, num_grid=101),
+    )
+
+    assert shape.entropy.shape == (2, 5)
+    assert shape.peak_count.shape == (2, 5)
+    assert jnp.all(jnp.isfinite(shape.entropy))
+    assert jnp.all(shape.normalized_entropy >= 0.0)
+    assert jnp.all(shape.normalized_entropy <= 1.0)
+    assert jnp.all(shape.peak_count >= 0.0)
+    assert jnp.all(shape.credible_width_90 >= 0.0)
 
 
 def test_x_sine_predictive_moments_are_finite_and_positive() -> None:

@@ -12,6 +12,14 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+import yaml  # noqa: E402
+
+from vbf.data import EpisodeBatch, LinearGaussianParams  # noqa: E402
+from vbf.nonlinear import (  # noqa: E402
+    GridReferenceConfig,
+    NonlinearDataConfig,
+    nonlinear_grid_filter_shape_diagnostics,
+)
 
 
 def main() -> None:
@@ -42,11 +50,23 @@ def main() -> None:
     _plot_predictive_episode(diagnostics, episode, predictive_path)
     _write_time_metrics(time_metrics_path, time_metrics)
     _plot_time_calibration(time_metrics, time_calibration_path)
+    shape_metrics_path = None
+    shape_plot_path = None
+    config_path = run_dir / "config.yaml"
+    if config_path.exists():
+        shape_metrics = _reference_shape_metrics(diagnostics, config_path)
+        shape_metrics_path = plot_dir / "reference_shape_metrics.csv"
+        shape_plot_path = plot_dir / "reference_shape.png"
+        _write_time_metrics(shape_metrics_path, shape_metrics)
+        _plot_reference_shape(shape_metrics, time_metrics, shape_plot_path)
     print(f"Wrote {posterior_path}")
     print(f"Wrote {variance_path}")
     print(f"Wrote {predictive_path}")
     print(f"Wrote {time_metrics_path}")
     print(f"Wrote {time_calibration_path}")
+    if shape_metrics_path is not None and shape_plot_path is not None:
+        print(f"Wrote {shape_metrics_path}")
+        print(f"Wrote {shape_plot_path}")
 
 
 def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Path) -> None:
@@ -215,6 +235,76 @@ def _plot_time_calibration(metrics: dict[str, np.ndarray], path: Path) -> None:
     axes[3].plot(time, metrics["reference_state_nll"], label="grid reference", color="tab:red")
     axes[3].plot(time, metrics["learned_state_nll"], label="learned", color="tab:purple")
     axes[3].set_ylabel("state NLL")
+    axes[3].set_xlabel("time")
+    axes[3].legend(loc="best")
+
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _reference_shape_metrics(
+    data: dict[str, np.ndarray],
+    config_path: Path,
+) -> dict[str, np.ndarray]:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data_config = NonlinearDataConfig(**config["data"])
+    state_params = LinearGaussianParams(**config["state_space"])
+    grid_config = GridReferenceConfig(**config.get("reference", {}))
+    batch = EpisodeBatch(
+        x=data["x"],
+        y=data["y"],
+        z=data["z"],
+    )
+    shape = nonlinear_grid_filter_shape_diagnostics(
+        batch,
+        state_params,
+        data_config=data_config,
+        grid_config=grid_config,
+    )
+    return {
+        "time": np.arange(data["z"].shape[1]),
+        "mean_entropy": np.mean(np.asarray(shape.entropy), axis=0),
+        "mean_normalized_entropy": np.mean(np.asarray(shape.normalized_entropy), axis=0),
+        "mean_peak_count": np.mean(np.asarray(shape.peak_count), axis=0),
+        "max_peak_count": np.max(np.asarray(shape.peak_count), axis=0),
+        "mean_max_mass": np.mean(np.asarray(shape.max_mass), axis=0),
+        "mean_credible_width_90": np.mean(np.asarray(shape.credible_width_90), axis=0),
+    }
+
+
+def _plot_reference_shape(
+    shape_metrics: dict[str, np.ndarray],
+    time_metrics: dict[str, np.ndarray],
+    path: Path,
+) -> None:
+    time = shape_metrics["time"]
+    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True, constrained_layout=True)
+
+    axes[0].plot(time, time_metrics["mean_x2"], color="tab:blue")
+    axes[0].set_ylabel("mean x^2")
+    axes[0].set_title("Observation strength")
+
+    axes[1].plot(time, shape_metrics["mean_peak_count"], label="mean", color="tab:orange")
+    axes[1].plot(time, shape_metrics["max_peak_count"], label="max", color="tab:red", alpha=0.75)
+    axes[1].set_ylabel("peak count")
+    axes[1].set_title("Reference posterior local peaks")
+    axes[1].legend(loc="best")
+
+    axes[2].plot(time, shape_metrics["mean_normalized_entropy"], color="tab:green")
+    axes[2].set_ylabel("norm entropy")
+
+    axes[3].plot(time, time_metrics["variance_ratio"], label="variance ratio", color="tab:purple")
+    axes[3].plot(
+        time,
+        time_metrics["learned_coverage_90"],
+        label="learned coverage",
+        color="tab:brown",
+    )
+    axes[3].axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[3].axhline(0.9, color="black", linestyle=":", linewidth=1.0)
+    axes[3].set_ylabel("learned")
     axes[3].set_xlabel("time")
     axes[3].legend(loc="best")
 
