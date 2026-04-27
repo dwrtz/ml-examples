@@ -358,6 +358,80 @@ The seed-averaged comparison plot is at:
 outputs/nonlinear_head_seed_sweep_1000/plots/sweep_comparison.png
 ```
 
+### Direct-Head Global Variance Calibration
+
+A calibrated direct-head variant was added:
+
+```text
+direct_moment_calibrated
+```
+
+It keeps direct moment distillation and adds a global reference
+variance-ratio penalty. We swept weights `0.1,1,3,10,30` with matched seeds
+`321,322,323`.
+
+Aggregate direct-head results:
+
+| case | variance weight | state NLL | coverage 90 | variance ratio |
+|---|---:|---:|---:|---:|
+| weak | 0 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.669 +/- 0.008 |
+| weak | 0.1 | 2.774 +/- 0.074 | 0.838 +/- 0.025 | 0.670 +/- 0.008 |
+| weak | 1 | 2.773 +/- 0.074 | 0.838 +/- 0.025 | 0.672 +/- 0.008 |
+| weak | 3 | 2.774 +/- 0.074 | 0.839 +/- 0.025 | 0.673 +/- 0.007 |
+| weak | 10 | 2.779 +/- 0.069 | 0.837 +/- 0.022 | 0.673 +/- 0.006 |
+| weak | 30 | 2.798 +/- 0.060 | 0.832 +/- 0.018 | 0.672 +/- 0.005 |
+| intermittent | 0 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.667 +/- 0.016 |
+| intermittent | 0.1 | 2.774 +/- 0.074 | 0.838 +/- 0.025 | 0.667 +/- 0.016 |
+| intermittent | 1 | 2.773 +/- 0.074 | 0.839 +/- 0.025 | 0.670 +/- 0.016 |
+| intermittent | 3 | 2.773 +/- 0.074 | 0.839 +/- 0.025 | 0.671 +/- 0.016 |
+| intermittent | 10 | 2.779 +/- 0.069 | 0.837 +/- 0.022 | 0.671 +/- 0.014 |
+| intermittent | 30 | 2.797 +/- 0.060 | 0.833 +/- 0.018 | 0.671 +/- 0.013 |
+
+The global variance-ratio penalty is not an effective direct-head calibration
+fix. It barely changes variance ratio or coverage through weight 10, and by
+weight 30 it begins to hurt NLL without improving calibration.
+
+The comparison plot is at:
+
+```text
+outputs/nonlinear_direct_calibration_1000/plots/sweep_comparison.png
+```
+
+### Direct-Head Time-Local Variance Calibration
+
+A time-local calibrated direct-head variant was then added:
+
+```text
+direct_moment_time_calibrated
+```
+
+It keeps direct moment distillation and adds a per-time reference variance-ratio
+penalty. We swept weights `1,3,10` with matched seeds `321,322,323`.
+
+Aggregate direct-head results:
+
+| case | time weight | state NLL | coverage 90 | variance ratio |
+|---|---:|---:|---:|---:|
+| weak | 0 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.669 +/- 0.008 |
+| weak | 1 | 2.774 +/- 0.074 | 0.838 +/- 0.025 | 0.670 +/- 0.008 |
+| weak | 3 | 2.775 +/- 0.074 | 0.838 +/- 0.025 | 0.670 +/- 0.007 |
+| weak | 10 | 2.782 +/- 0.069 | 0.835 +/- 0.021 | 0.669 +/- 0.006 |
+| intermittent | 0 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.667 +/- 0.016 |
+| intermittent | 1 | 2.774 +/- 0.074 | 0.838 +/- 0.025 | 0.668 +/- 0.016 |
+| intermittent | 3 | 2.775 +/- 0.074 | 0.838 +/- 0.025 | 0.668 +/- 0.016 |
+| intermittent | 10 | 2.782 +/- 0.069 | 0.835 +/- 0.022 | 0.667 +/- 0.014 |
+
+Time-local calibration also fails to recover the direct head's under-coverage.
+This suggests the direct head's variance scale is not easily corrected by
+simple aggregate variance penalties once self-fed moment distillation has
+converged.
+
+The comparison plot is at:
+
+```text
+outputs/nonlinear_direct_time_calibration_1000/plots/sweep_comparison.png
+```
+
 ## Current Interpretation
 
 The nonlinear benchmark is now telling a sharper story:
@@ -375,13 +449,16 @@ The nonlinear benchmark is now telling a sharper story:
    steps, especially with horizon 4.
 8. Across a 3-seed matched sweep, direct and structured rollout are tied on weak
    observations, but direct remains better on intermittent state NLL.
-9. The direct head is a strong positive control and remains stable in rollout.
+9. Global and time-local variance-ratio calibration do not materially fix
+   direct-head under-coverage.
+10. The direct head is a strong positive control and remains stable in rollout.
 
 In short: the current structured nonlinear update is not primarily blocked by
 one-step capacity. It is blocked by rollout stability/compounding error, and
 rollout distillation is a viable training fix. The direct head remains the
-cleaner architecture for intermittent observations unless calibration is the
-dominant criterion.
+cleaner architecture for intermittent observations when state NLL is the
+dominant criterion. If calibration is the dominant criterion, the structured
+horizon-4 rollout head remains the better calibrated option.
 
 ## Suggested Next Decisions
 
@@ -395,8 +472,8 @@ Possible checks:
 - add rollout stability plots for variance ratio and NLL by horizon
 - inspect variance-path saturation diagnostics for the structured head during
   intermittent rollouts
-- evaluate whether a calibrated direct head can recover the structured head's
-  coverage without losing its lower intermittent NLL
+- test low-observation-only direct-head variance calibration only if calibrated
+  direct coverage remains important
 
 ### Decision 2: Promote Direct Head To Main Nonlinear Candidate
 
@@ -414,21 +491,23 @@ therefore rollout-stability training for strict Gaussian filters.
 
 ## Suggested Immediate Next Experiment
 
-Run a calibration follow-up on the direct head:
+Run a low-observation-only calibration follow-up only if we still want a
+calibrated direct head:
 
 ```text
-direct_moment_calibrated
+direct_moment_low_obs_calibrated
 ```
 
 The goal is to keep the direct head's lower intermittent state NLL while raising
-coverage/variance ratio toward the grid reference.
+coverage/variance ratio toward the grid reference. Both global and time-local
+variance penalties did not move the direct head enough.
 
 Interpretation:
 
-- If direct calibration improves coverage without increasing NLL much, promote
-  the direct head as the default nonlinear strict Gaussian filter.
-- If direct calibration loses the NLL advantage, keep both candidates and report
-  the NLL/calibration tradeoff.
+- If low-observation calibration improves coverage without increasing NLL much,
+  keep direct as the default and report the calibrated variant.
+- If it also fails, stop trying simple variance penalties and report direct
+  versus structured as an NLL/calibration tradeoff.
 
 ## Relevant Commands
 
@@ -472,6 +551,16 @@ make sweep-nonlinear-learned \
   NONLINEAR_LEARNED_STEPS=1000 \
   NONLINEAR_LEARNED_DIR=outputs/nonlinear_head_seed_sweep_1000
 
+for w in 0.1 1 3 10 30; do \
+  make sweep-nonlinear-learned \
+    NONLINEAR_LEARNED_CONFIGS=experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+    NONLINEAR_LEARNED_MODELS=direct_moment_calibrated \
+    NONLINEAR_LEARNED_SEEDS=321,322,323 \
+    NONLINEAR_REFERENCE_VARIANCE_RATIO_WEIGHT=$$w \
+    NONLINEAR_LEARNED_STEPS=1000 \
+    NONLINEAR_LEARNED_DIR=outputs/nonlinear_direct_calibration_1000/w$$w; \
+done
+
 make plot-nonlinear-sweep \
   NONLINEAR_SWEEP_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv,outputs/nonlinear_teacher_forced_moment_1000/metrics.csv,outputs/nonlinear_rollout_distillation_250/metrics.csv \
   NONLINEAR_SWEEP_BASELINE_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv \
@@ -493,6 +582,28 @@ make plot-nonlinear-sweep \
   NONLINEAR_SWEEP_PATTERNS=weak_sinusoidal,intermittent_sinusoidal \
   NONLINEAR_SWEEP_PLOT_DIR=outputs/nonlinear_head_seed_sweep_1000/plots
 
+uv run python scripts/plot_nonlinear_sweep.py \
+  --metrics outputs/nonlinear_head_seed_sweep_1000/metrics.csv,outputs/nonlinear_direct_calibration_1000/w0.1/metrics.csv,outputs/nonlinear_direct_calibration_1000/w1/metrics.csv,outputs/nonlinear_direct_calibration_1000/w3/metrics.csv,outputs/nonlinear_direct_calibration_1000/w10/metrics.csv,outputs/nonlinear_direct_calibration_1000/w30/metrics.csv \
+  --weights base,0.1,1,3,10,30 \
+  --patterns weak_sinusoidal,intermittent_sinusoidal \
+  --output-dir outputs/nonlinear_direct_calibration_1000/plots
+
+for w in 1 3 10; do \
+  make sweep-nonlinear-learned \
+    NONLINEAR_LEARNED_CONFIGS=experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+    NONLINEAR_LEARNED_MODELS=direct_moment_time_calibrated \
+    NONLINEAR_LEARNED_SEEDS=321,322,323 \
+    NONLINEAR_REFERENCE_TIME_VARIANCE_RATIO_WEIGHT=$$w \
+    NONLINEAR_LEARNED_STEPS=1000 \
+    NONLINEAR_LEARNED_DIR=outputs/nonlinear_direct_time_calibration_1000/w$$w; \
+done
+
+uv run python scripts/plot_nonlinear_sweep.py \
+  --metrics outputs/nonlinear_head_seed_sweep_1000/metrics.csv,outputs/nonlinear_direct_time_calibration_1000/w1/metrics.csv,outputs/nonlinear_direct_time_calibration_1000/w3/metrics.csv,outputs/nonlinear_direct_time_calibration_1000/w10/metrics.csv \
+  --weights base,1,3,10 \
+  --patterns weak_sinusoidal,intermittent_sinusoidal \
+  --output-dir outputs/nonlinear_direct_time_calibration_1000/plots
+
 make plot-nonlinear \
   RUN_DIR=outputs/nonlinear_calibration_weight_sweep_250/w3/nonlinear_weak_sine_observation_structured_elbo_ref_calibrated
 
@@ -504,8 +615,8 @@ uv run python scripts/diagnose_nonlinear_mixture_projection.py \
 
 1. Should the nonlinear branch default to the simpler direct head given the
    intermittent NLL advantage?
-2. Should the next direct-head experiment optimize calibration explicitly, or is
-   under-coverage acceptable for the current research claim?
+2. Should we spend one more diagnostic on low-observation-only direct-head
+   calibration, or is under-coverage acceptable for the current research claim?
 3. Is the current nonlinear claim framed correctly as: "the structured
    EKF-residualized head learns the one-step map and can be stabilized with
    short-horizon rollout distillation"?
