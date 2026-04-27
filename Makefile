@@ -7,6 +7,10 @@ NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
 TRAIN_NONLINEAR_CONFIG ?= experiments/nonlinear/08_direct_elbo_sine_mlp.yaml
 NONLINEAR_REFERENCE_DIR ?= outputs/nonlinear_reference_suite
 NONLINEAR_REFERENCE_CONFIGS ?= experiments/nonlinear/01_sine_observation.yaml,experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml,experiments/nonlinear/05_zero_sine_observation.yaml,experiments/nonlinear/06_random_normal_sine_observation.yaml
+NONLINEAR_LEARNED_DIR ?= outputs/nonlinear_learned_suite
+NONLINEAR_LEARNED_CONFIGS ?= $(NONLINEAR_REFERENCE_CONFIGS)
+NONLINEAR_LEARNED_MODELS ?= direct_elbo
+NONLINEAR_LEARNED_STEPS ?= 250
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
@@ -52,7 +56,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
 
 help:
 	@printf "Targets:\n"
@@ -90,6 +94,7 @@ help:
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
 	@printf "  sweep-nonlinear-reference Run nonlinear grid reference suite\n"
+	@printf "  sweep-nonlinear-learned Run learned nonlinear filter suite\n"
 	@printf "  clean              Remove local caches\n"
 
 setup:
@@ -191,6 +196,9 @@ evaluate-nonlinear:
 
 sweep-nonlinear-reference:
 	$(UV) run python scripts/sweep_nonlinear_reference.py --configs $(NONLINEAR_REFERENCE_CONFIGS) --output-dir $(NONLINEAR_REFERENCE_DIR)
+
+sweep-nonlinear-learned:
+	$(UV) run python scripts/sweep_nonlinear_learned.py --configs $(NONLINEAR_LEARNED_CONFIGS) --models $(NONLINEAR_LEARNED_MODELS) --steps $(NONLINEAR_LEARNED_STEPS) --output-dir $(NONLINEAR_LEARNED_DIR)
 
 clean:
 	rm -rf .pytest_cache .ruff_cache

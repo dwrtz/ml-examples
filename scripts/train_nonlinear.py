@@ -51,8 +51,19 @@ def main() -> None:
     evaluation_config = config.get("evaluation", {})
     reference_config = GridReferenceConfig(**config.get("reference", {}))
     min_var = float(training_config.get("min_var", 1e-6))
+    reference_variance_ratio_weight = float(
+        training_config.get("reference_variance_ratio_weight", 0.0)
+    )
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
+    train_reference = None
+    if reference_variance_ratio_weight != 0.0:
+        train_reference = nonlinear_grid_filter(
+            train_batch,
+            state_params,
+            data_config=data_config,
+            grid_config=reference_config,
+        )
     eval_data_config = NonlinearDataConfig(**{**config["data"], **evaluation_config.get("data", {})})
     eval_batch = make_nonlinear_batch(
         eval_data_config,
@@ -73,7 +84,7 @@ def main() -> None:
             state_params,
             min_var=min_var,
         )
-        return -jnp.mean(
+        loss = -jnp.mean(
             _nonlinear_edge_elbo(
                 outputs,
                 train_batch,
@@ -83,6 +94,12 @@ def main() -> None:
                 num_samples=int(training_config.get("num_elbo_samples", 8)),
             )
         )
+        if reference_variance_ratio_weight != 0.0:
+            if train_reference is None:
+                raise ValueError("train_reference is required for reference calibration")
+            ratio = jnp.mean(outputs.filter_var) / jnp.mean(train_reference.filter_var)
+            loss = loss + reference_variance_ratio_weight * jnp.log(ratio) ** 2
+        return loss
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
     history: list[tuple[int, float]] = []
@@ -138,6 +155,7 @@ def main() -> None:
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
+        "reference_variance_ratio_weight": reference_variance_ratio_weight,
         "final_loss": final_loss,
         "state_rmse": float(rmse_global(outputs.filter_mean, eval_batch.z)),
         "reference_state_rmse": float(rmse_global(reference.filter_mean, eval_batch.z)),
