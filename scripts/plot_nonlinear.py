@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 import matplotlib
@@ -33,12 +34,19 @@ def main() -> None:
     posterior_path = plot_dir / f"posterior_episode_{episode}.png"
     variance_path = plot_dir / "variance_over_time.png"
     predictive_path = plot_dir / f"predictive_episode_{episode}.png"
+    time_metrics_path = plot_dir / "time_metrics.csv"
+    time_calibration_path = plot_dir / "time_calibration.png"
+    time_metrics = _time_metrics(diagnostics)
     _plot_posterior_episode(diagnostics, episode, posterior_path)
     _plot_variance_over_time(diagnostics, variance_path)
     _plot_predictive_episode(diagnostics, episode, predictive_path)
+    _write_time_metrics(time_metrics_path, time_metrics)
+    _plot_time_calibration(time_metrics, time_calibration_path)
     print(f"Wrote {posterior_path}")
     print(f"Wrote {variance_path}")
     print(f"Wrote {predictive_path}")
+    print(f"Wrote {time_metrics_path}")
+    print(f"Wrote {time_calibration_path}")
 
 
 def _plot_posterior_episode(data: dict[str, np.ndarray], episode: int, path: Path) -> None:
@@ -138,6 +146,97 @@ def _plot_predictive_episode(data: dict[str, np.ndarray], episode: int, path: Pa
     axis.legend(loc="best")
     fig.savefig(path, dpi=160)
     plt.close(fig)
+
+
+def _time_metrics(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    reference_var_t = np.mean(data["reference_filter_var"], axis=0)
+    learned_var_t = np.mean(data["learned_filter_var"], axis=0)
+    reference_nll_t = _scalar_gaussian_nll(
+        data["z"],
+        data["reference_filter_mean"],
+        data["reference_filter_var"],
+    ).mean(axis=0)
+    learned_nll_t = _scalar_gaussian_nll(
+        data["z"],
+        data["learned_filter_mean"],
+        data["learned_filter_var"],
+    ).mean(axis=0)
+    return {
+        "time": np.arange(data["z"].shape[1]),
+        "mean_x2": np.mean(data["x"] ** 2, axis=0),
+        "reference_filter_var": reference_var_t,
+        "learned_filter_var": learned_var_t,
+        "variance_ratio": learned_var_t / np.maximum(reference_var_t, 1e-12),
+        "reference_coverage_90": _coverage(
+            data["z"],
+            data["reference_filter_mean"],
+            data["reference_filter_var"],
+            z_score=1.6448536269514722,
+        ),
+        "learned_coverage_90": _coverage(
+            data["z"],
+            data["learned_filter_mean"],
+            data["learned_filter_var"],
+            z_score=1.6448536269514722,
+        ),
+        "reference_state_nll": reference_nll_t,
+        "learned_state_nll": learned_nll_t,
+    }
+
+
+def _write_time_metrics(path: Path, metrics: dict[str, np.ndarray]) -> None:
+    fieldnames = list(metrics)
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        for index in range(len(metrics["time"])):
+            writer.writerow({field: float(metrics[field][index]) for field in fieldnames})
+
+
+def _plot_time_calibration(metrics: dict[str, np.ndarray], path: Path) -> None:
+    time = metrics["time"]
+    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True, constrained_layout=True)
+
+    axes[0].plot(time, metrics["mean_x2"], color="tab:blue")
+    axes[0].set_ylabel("mean x^2")
+    axes[0].set_title("Observation strength")
+
+    axes[1].plot(time, metrics["variance_ratio"], color="tab:purple")
+    axes[1].axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[1].set_ylabel("var ratio")
+    axes[1].set_title("Learned / reference variance")
+
+    axes[2].plot(time, metrics["reference_coverage_90"], label="grid reference", color="tab:red")
+    axes[2].plot(time, metrics["learned_coverage_90"], label="learned", color="tab:purple")
+    axes[2].axhline(0.9, color="black", linestyle="--", linewidth=1.0)
+    axes[2].set_ylabel("coverage 90")
+    axes[2].legend(loc="best")
+
+    axes[3].plot(time, metrics["reference_state_nll"], label="grid reference", color="tab:red")
+    axes[3].plot(time, metrics["learned_state_nll"], label="learned", color="tab:purple")
+    axes[3].set_ylabel("state NLL")
+    axes[3].set_xlabel("time")
+    axes[3].legend(loc="best")
+
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _scalar_gaussian_nll(value: np.ndarray, mean: np.ndarray, var: np.ndarray) -> np.ndarray:
+    return 0.5 * (np.log(2.0 * np.pi * var) + (value - mean) ** 2 / var)
+
+
+def _coverage(
+    value: np.ndarray,
+    mean: np.ndarray,
+    var: np.ndarray,
+    *,
+    z_score: float,
+) -> np.ndarray:
+    radius = z_score * np.sqrt(var)
+    return np.mean(np.abs(value - mean) <= radius, axis=0)
 
 
 if __name__ == "__main__":
