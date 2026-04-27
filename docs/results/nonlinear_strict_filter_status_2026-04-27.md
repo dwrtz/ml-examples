@@ -332,6 +332,32 @@ The expanded comparison plot is at:
 outputs/nonlinear_rollout_distillation_h4_1000/plots/sweep_comparison.png
 ```
 
+### Matched Direct-Versus-Structured Seed Sweep
+
+The direct head and the horizon-4 rollout-distilled structured head were then
+run with matched seeds `321,322,323`, weak/intermittent observations, and 1000
+training steps.
+
+Aggregate results:
+
+| case | head | seeds | state NLL | coverage 90 | variance ratio |
+|---|---|---:|---:|---:|---:|
+| weak | direct | 3 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.669 +/- 0.008 |
+| weak | structured rollout h4 | 3 | 2.774 +/- 0.061 | 0.885 +/- 0.018 | 0.994 +/- 0.014 |
+| intermittent | direct | 3 | 2.774 +/- 0.074 | 0.838 +/- 0.026 | 0.667 +/- 0.016 |
+| intermittent | structured rollout h4 | 3 | 3.275 +/- 0.106 | 0.860 +/- 0.020 | 1.437 +/- 0.445 |
+
+The weak case is effectively tied on state NLL, but structured rollout is much
+better calibrated. The intermittent case favors the direct head on state NLL by
+about 0.50, while structured rollout has higher coverage and less
+under-dispersion but a noisier variance ratio.
+
+The seed-averaged comparison plot is at:
+
+```text
+outputs/nonlinear_head_seed_sweep_1000/plots/sweep_comparison.png
+```
+
 ## Current Interpretation
 
 The nonlinear benchmark is now telling a sharper story:
@@ -347,13 +373,15 @@ The nonlinear benchmark is now telling a sharper story:
    forcing, but its self-fed rollout is unstable.
 7. Short-horizon rollout distillation stabilizes the structured head at 1000
    steps, especially with horizon 4.
-8. The direct head is a strong positive control and remains stable in rollout.
+8. Across a 3-seed matched sweep, direct and structured rollout are tied on weak
+   observations, but direct remains better on intermittent state NLL.
+9. The direct head is a strong positive control and remains stable in rollout.
 
 In short: the current structured nonlinear update is not primarily blocked by
 one-step capacity. It is blocked by rollout stability/compounding error, and
 rollout distillation is a viable training fix. The direct head remains the
-cleaner architecture unless the structured branch has other desired inductive
-biases.
+cleaner architecture for intermittent observations unless calibration is the
+dominant criterion.
 
 ## Suggested Next Decisions
 
@@ -364,17 +392,18 @@ performance and self-fed rollout behavior.
 
 Possible checks:
 
-- compare direct moment distillation and horizon-4 rollout distillation with
-  matched 250/1000-step budgets
 - add rollout stability plots for variance ratio and NLL by horizon
 - inspect variance-path saturation diagnostics for the structured head during
   intermittent rollouts
+- evaluate whether a calibrated direct head can recover the structured head's
+  coverage without losing its lower intermittent NLL
 
 ### Decision 2: Promote Direct Head To Main Nonlinear Candidate
 
-The direct head should remain in the suite and is still the simpler nonlinear
-candidate. The structured head is viable with rollout distillation, so the next
-decision is architecture preference rather than a hard failure diagnosis.
+The direct head should become the default nonlinear candidate. The structured
+head is viable with rollout distillation and better calibrated on weak
+observations, but the direct head has the better intermittent NLL and is a
+simpler architecture.
 
 ### Decision 3: Defer Mamba/Mixture Until This Is Resolved
 
@@ -385,23 +414,21 @@ therefore rollout-stability training for strict Gaussian filters.
 
 ## Suggested Immediate Next Experiment
 
-Run a matched 1000-step comparison with direct and rollout-distilled structured
-heads:
+Run a calibration follow-up on the direct head:
 
 ```text
-direct_moment_distilled
-structured_moment_rollout_h4
+direct_moment_calibrated
 ```
 
-Use weak/intermittent with matched seeds, training budgets, and plot reporting.
+The goal is to keep the direct head's lower intermittent state NLL while raising
+coverage/variance ratio toward the grid reference.
 
 Interpretation:
 
-- If direct remains comparable or better, prefer it as the default nonlinear
-  strict Gaussian filter.
-- If rollout-distilled structured wins under matched budgets or seed sweeps,
-  keep the EKF-residualized inductive bias and standardize rollout
-  distillation.
+- If direct calibration improves coverage without increasing NLL much, promote
+  the direct head as the default nonlinear strict Gaussian filter.
+- If direct calibration loses the NLL advantage, keep both candidates and report
+  the NLL/calibration tradeoff.
 
 ## Relevant Commands
 
@@ -438,6 +465,13 @@ uv run python scripts/sweep_nonlinear_learned.py \
   --steps 1000 \
   --output-dir outputs/nonlinear_rollout_distillation_h4_1000
 
+make sweep-nonlinear-learned \
+  NONLINEAR_LEARNED_CONFIGS=experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+  NONLINEAR_LEARNED_MODELS=direct_moment_distilled,structured_moment_rollout_h4 \
+  NONLINEAR_LEARNED_SEEDS=321,322,323 \
+  NONLINEAR_LEARNED_STEPS=1000 \
+  NONLINEAR_LEARNED_DIR=outputs/nonlinear_head_seed_sweep_1000
+
 make plot-nonlinear-sweep \
   NONLINEAR_SWEEP_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv,outputs/nonlinear_teacher_forced_moment_1000/metrics.csv,outputs/nonlinear_rollout_distillation_250/metrics.csv \
   NONLINEAR_SWEEP_BASELINE_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv \
@@ -452,6 +486,13 @@ make plot-nonlinear-sweep \
   NONLINEAR_SWEEP_PATTERNS=weak_sinusoidal,intermittent_sinusoidal \
   NONLINEAR_SWEEP_PLOT_DIR=outputs/nonlinear_rollout_distillation_h4_1000/plots
 
+make plot-nonlinear-sweep \
+  NONLINEAR_SWEEP_METRICS=outputs/nonlinear_head_seed_sweep_1000/metrics.csv \
+  NONLINEAR_SWEEP_BASELINE_METRICS=outputs/nonlinear_head_seed_sweep_1000/metrics.csv \
+  NONLINEAR_SWEEP_WEIGHTS=seed-sweep \
+  NONLINEAR_SWEEP_PATTERNS=weak_sinusoidal,intermittent_sinusoidal \
+  NONLINEAR_SWEEP_PLOT_DIR=outputs/nonlinear_head_seed_sweep_1000/plots
+
 make plot-nonlinear \
   RUN_DIR=outputs/nonlinear_calibration_weight_sweep_250/w3/nonlinear_weak_sine_observation_structured_elbo_ref_calibrated
 
@@ -461,10 +502,10 @@ uv run python scripts/diagnose_nonlinear_mixture_projection.py \
 
 ## Review Questions For The Research Director
 
-1. Should the nonlinear branch default to the simpler direct head, or keep the
-   structured head with rollout distillation?
-2. Is one seed enough for this decision, or do you want a small seed sweep for
-   direct versus horizon-4 rollout distillation?
+1. Should the nonlinear branch default to the simpler direct head given the
+   intermittent NLL advantage?
+2. Should the next direct-head experiment optimize calibration explicitly, or is
+   under-coverage acceptable for the current research claim?
 3. Is the current nonlinear claim framed correctly as: "the structured
    EKF-residualized head learns the one-step map and can be stabilized with
    short-horizon rollout distillation"?

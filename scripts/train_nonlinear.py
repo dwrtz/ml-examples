@@ -320,6 +320,7 @@ def main() -> None:
     metrics = {
         "benchmark": "nonlinear",
         "objective": config["model"],
+        "seed": int(config["seed"]),
         "observation": eval_data_config.observation,
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": int(training_config["steps"]),

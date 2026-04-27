@@ -267,19 +267,21 @@ def _metric_value(
     metric: str,
 ) -> float:
     calibration, weight = series_key
-    row = next(
-        item
+    values = [
+        float(item[metric])
         for item in rows
         if item["x_pattern"] == pattern
         and item["calibration"] == calibration
         and item["weight"] == weight
-    )
-    return float(row[metric])
+    ]
+    return float(np.mean(values))
 
 
 def _reference_coverage(rows: list[dict[str, str]], pattern: str) -> float:
-    row = next(item for item in rows if item["x_pattern"] == pattern)
-    return float(row["reference_coverage_90"])
+    values = [
+        float(item["reference_coverage_90"]) for item in rows if item["x_pattern"] == pattern
+    ]
+    return float(np.mean(values))
 
 
 def _short_pattern(pattern: str) -> str:

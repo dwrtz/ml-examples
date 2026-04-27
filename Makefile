@@ -11,6 +11,7 @@ NONLINEAR_LEARNED_DIR ?= outputs/nonlinear_learned_suite
 NONLINEAR_LEARNED_CONFIGS ?= $(NONLINEAR_REFERENCE_CONFIGS)
 NONLINEAR_LEARNED_MODELS ?= direct_elbo,structured_elbo
 NONLINEAR_LEARNED_STEPS ?= 250
+NONLINEAR_LEARNED_SEEDS ?=
 NONLINEAR_SWEEP_METRICS ?= outputs/nonlinear_calibration_weight_sweep_250/w1/metrics.csv,outputs/nonlinear_calibration_weight_sweep_250/w3/metrics.csv,outputs/nonlinear_calibration_weight_sweep_250/w10/metrics.csv
 NONLINEAR_SWEEP_BASELINE_METRICS ?= outputs/nonlinear_calibration_cached_250/metrics.csv
 NONLINEAR_SWEEP_WEIGHTS ?= 1,3,10
@@ -211,7 +212,7 @@ sweep-nonlinear-reference:
 	$(UV) run python scripts/sweep_nonlinear_reference.py --configs $(NONLINEAR_REFERENCE_CONFIGS) --output-dir $(NONLINEAR_REFERENCE_DIR)
 
 sweep-nonlinear-learned:
-	$(UV) run python scripts/sweep_nonlinear_learned.py --configs $(NONLINEAR_LEARNED_CONFIGS) --models $(NONLINEAR_LEARNED_MODELS) --steps $(NONLINEAR_LEARNED_STEPS) --output-dir $(NONLINEAR_LEARNED_DIR)
+	$(UV) run python scripts/sweep_nonlinear_learned.py --configs $(NONLINEAR_LEARNED_CONFIGS) --models $(NONLINEAR_LEARNED_MODELS) $(if $(NONLINEAR_LEARNED_SEEDS),--seeds $(NONLINEAR_LEARNED_SEEDS),) --steps $(NONLINEAR_LEARNED_STEPS) --output-dir $(NONLINEAR_LEARNED_DIR)
 
 clean:
 	rm -rf .pytest_cache .ruff_cache

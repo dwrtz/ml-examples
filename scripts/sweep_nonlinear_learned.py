@@ -57,6 +57,7 @@ def main() -> None:
     parser.add_argument("--configs", default=",".join(DEFAULT_CONFIGS))
     parser.add_argument("--models", default="direct_elbo")
     parser.add_argument("--steps", type=int, default=250)
+    parser.add_argument("--seeds", default=None)
     parser.add_argument("--num-elbo-samples", type=int, default=16)
     parser.add_argument("--batch-seed-stride", type=int, default=1)
     parser.add_argument("--reference-variance-ratio-weight", type=float, default=1.0)
@@ -72,6 +73,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config_paths = _parse_config_paths(args.configs)
+    seeds = None if args.seeds is None else _parse_ints(args.seeds, name="--seeds")
     model_specs = _selected_model_specs(
         args.models,
         reference_variance_ratio_weight=args.reference_variance_ratio_weight,
@@ -86,23 +88,33 @@ def main() -> None:
     rows = []
     for config_path in config_paths:
         reference_config = _read_config(config_path)
-        for spec in model_specs:
-            run_name = f"{reference_config['name']}_{spec.key}"
-            run_dir = output_dir / run_name
-            run_config_path = output_dir / "configs" / f"{run_name}.yaml"
-            config = _make_train_config(
-                base_train_config,
-                reference_config,
-                spec=spec,
-                steps=args.steps,
-                num_elbo_samples=args.num_elbo_samples,
-                batch_seed_stride=args.batch_seed_stride,
-                output_dir=run_dir,
-            )
-            _write_config(run_config_path, config)
-            if not args.skip_run:
-                _run_training(run_config_path)
-            rows.append(_load_row(run_dir, config_path=run_config_path, config=config, spec=spec))
+        for seed in seeds or [int(reference_config["seed"])]:
+            for spec in model_specs:
+                run_name = _run_name(reference_config["name"], spec.key, seed=seed, seeds=seeds)
+                run_dir = output_dir / run_name
+                run_config_path = output_dir / "configs" / f"{run_name}.yaml"
+                config = _make_train_config(
+                    base_train_config,
+                    reference_config,
+                    spec=spec,
+                    run_name=run_name,
+                    seed=seed,
+                    steps=args.steps,
+                    num_elbo_samples=args.num_elbo_samples,
+                    batch_seed_stride=args.batch_seed_stride,
+                    output_dir=run_dir,
+                )
+                _write_config(run_config_path, config)
+                if not args.skip_run:
+                    _run_training(run_config_path)
+                rows.append(
+                    _load_row(
+                        run_dir,
+                        config_path=run_config_path,
+                        config=config,
+                        spec=spec,
+                    )
+                )
 
     _write_csv(output_dir / "metrics.csv", rows)
     (output_dir / "summary.json").write_text(
@@ -119,6 +131,19 @@ def _parse_config_paths(value: str) -> list[Path]:
     if not paths:
         raise ValueError("--configs must include at least one config path")
     return paths
+
+
+def _parse_ints(value: str, *, name: str) -> list[int]:
+    values = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not values:
+        raise ValueError(f"{name} must include at least one integer")
+    return values
+
+
+def _run_name(config_name: str, spec_key: str, *, seed: int, seeds: list[int] | None) -> str:
+    if seeds is None:
+        return f"{config_name}_{spec_key}"
+    return f"{config_name}_seed_{seed}_{spec_key}"
 
 
 def _selected_model_specs(
@@ -267,6 +292,8 @@ def _make_train_config(
     reference_config: dict[str, Any],
     *,
     spec: ModelSpec,
+    run_name: str,
+    seed: int,
     steps: int,
     num_elbo_samples: int,
     batch_seed_stride: int,
@@ -274,7 +301,8 @@ def _make_train_config(
 ) -> dict[str, Any]:
     config = {
         **base_train_config,
-        "name": f"{reference_config['name']}_{spec.key}",
+        "name": run_name,
+        "seed": seed,
         "model": spec.objective,
         "output_dir": str(output_dir),
         "data": dict(reference_config["data"]),
@@ -333,6 +361,7 @@ def _load_row(
         "name": config["name"],
         "config": str(config_path),
         "model": spec.label,
+        "seed": metrics["seed"],
         "objective": metrics["objective"],
         "x_pattern": metrics["x_pattern"],
         "time_steps": config["data"]["time_steps"],
@@ -360,6 +389,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "name",
         "config",
         "model",
+        "seed",
         "objective",
         "x_pattern",
         "time_steps",
@@ -398,6 +428,24 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
             "{reference_coverage_90:.6f} | {variance_ratio:.6f} | "
             "{predictive_nll:.6f} | {reference_predictive_nll:.6f} |".format(**row)
         )
+    aggregate_rows = _aggregate_rows(rows)
+    if len(aggregate_rows) != len(rows):
+        lines.extend(
+            [
+                "",
+                "## Aggregate By Seed",
+                "",
+                "| x pattern | Model | Steps | seeds | state NLL | coverage 90 | variance ratio |",
+                "|---|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in aggregate_rows:
+            lines.append(
+                "| {x_pattern} | {model} | {steps} | {num_seeds} | "
+                "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
+                "{coverage_90_mean:.6f} +/- {coverage_90_std:.6f} | "
+                "{variance_ratio_mean:.6f} +/- {variance_ratio_std:.6f} |".format(**row)
+            )
     lines.extend(
         [
             "",
@@ -408,6 +456,29 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (row["x_pattern"], row["model"], int(row["steps"]))
+        groups.setdefault(key, []).append(row)
+    aggregate = []
+    for (x_pattern, model, steps), group in groups.items():
+        item: dict[str, Any] = {
+            "x_pattern": x_pattern,
+            "model": model,
+            "steps": steps,
+            "num_seeds": len(group),
+        }
+        for metric in ("state_nll", "coverage_90", "variance_ratio"):
+            values = [float(row[metric]) for row in group]
+            mean = sum(values) / len(values)
+            variance = sum((value - mean) ** 2 for value in values) / len(values)
+            item[f"{metric}_mean"] = mean
+            item[f"{metric}_std"] = variance**0.5
+        aggregate.append(item)
+    return sorted(aggregate, key=lambda row: (row["x_pattern"], row["model"], row["steps"]))
 
 
 if __name__ == "__main__":
