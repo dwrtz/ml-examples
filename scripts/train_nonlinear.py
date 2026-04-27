@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from vbf.data import LinearGaussianParams
+from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
@@ -61,23 +61,26 @@ def main() -> None:
     reference_time_variance_ratio_weight = float(
         training_config.get("reference_time_variance_ratio_weight", 0.0)
     )
-    reference_log_variance_weight = float(
-        training_config.get("reference_log_variance_weight", 0.0)
-    )
+    reference_log_variance_weight = float(training_config.get("reference_log_variance_weight", 0.0))
     reference_low_observation_variance_ratio_weight = float(
         training_config.get("reference_low_observation_variance_ratio_weight", 0.0)
     )
     low_observation_eps = float(training_config.get("low_observation_eps", 1e-3))
-
-    train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
-    train_reference = None
-    train_cached = None
-    if (
+    resample_batch = bool(training_config.get("resample_batch", False))
+    batch_seed_stride = int(training_config.get("batch_seed_stride", 1))
+    uses_reference_calibration = (
         reference_variance_ratio_weight != 0.0
         or reference_time_variance_ratio_weight != 0.0
         or reference_log_variance_weight != 0.0
         or reference_low_observation_variance_ratio_weight != 0.0
-    ):
+    )
+    if resample_batch and uses_reference_calibration:
+        raise ValueError("resample_batch is only supported for non-reference-calibrated training")
+
+    train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
+    train_reference = None
+    train_cached = None
+    if uses_reference_calibration:
         train_cached = load_or_compute_nonlinear_reference(
             data_config,
             state_params,
@@ -99,7 +102,9 @@ def main() -> None:
         mean_x2_t = jnp.mean(train_batch.x**2, axis=0)
         low_observation_weights_t = 1.0 / (mean_x2_t + low_observation_eps)
         low_observation_weights_t = low_observation_weights_t / jnp.mean(low_observation_weights_t)
-    eval_data_config = NonlinearDataConfig(**{**config["data"], **evaluation_config.get("data", {})})
+    eval_data_config = NonlinearDataConfig(
+        **{**config["data"], **evaluation_config.get("data", {})}
+    )
     eval_seed = int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000))
     eval_batch = make_nonlinear_batch(
         eval_data_config,
@@ -114,11 +119,18 @@ def main() -> None:
     )
     opt_state = init_adam(params)
 
-    def loss_fn(current_params: dict[str, jax.Array], key: jax.Array) -> jax.Array:
+    def loss_fn(
+        current_params: dict[str, jax.Array],
+        batch_x: jax.Array,
+        batch_y: jax.Array,
+        batch_z: jax.Array,
+        key: jax.Array,
+    ) -> jax.Array:
+        batch = EpisodeBatch(x=batch_x, y=batch_y, z=batch_z)
         outputs = _run_model_filter(
             str(config["model"]),
             current_params,
-            train_batch,
+            batch,
             state_params,
             observation=data_config.observation,
             min_var=min_var,
@@ -126,7 +138,7 @@ def main() -> None:
         loss = -jnp.mean(
             _nonlinear_edge_elbo(
                 outputs,
-                train_batch,
+                batch,
                 state_params,
                 key,
                 observation=data_config.observation,
@@ -165,7 +177,22 @@ def main() -> None:
     train_key = jax.random.PRNGKey(int(config["seed"]) + 2)
     for step in range(1, int(training_config["steps"]) + 1):
         train_key, step_key = jax.random.split(train_key)
-        loss_value, grads = value_and_grad(params, step_key)
+        step_batch = (
+            make_nonlinear_batch(
+                data_config,
+                state_params,
+                seed=int(config["seed"]) + batch_seed_stride * step,
+            )
+            if resample_batch
+            else train_batch
+        )
+        loss_value, grads = value_and_grad(
+            params,
+            step_batch.x,
+            step_batch.y,
+            step_batch.z,
+            step_key,
+        )
         params, opt_state = adam_update(
             params,
             grads,
@@ -175,7 +202,15 @@ def main() -> None:
         if step == 1 or step % int(training_config["log_every"]) == 0:
             history.append((step, float(loss_value)))
 
-    final_loss = float(loss_fn(params, jax.random.PRNGKey(int(config["seed"]) + 3)))
+    final_loss = float(
+        loss_fn(
+            params,
+            train_batch.x,
+            train_batch.y,
+            train_batch.z,
+            jax.random.PRNGKey(int(config["seed"]) + 3),
+        )
+    )
     outputs = _run_model_filter(
         str(config["model"]),
         params,
@@ -225,6 +260,8 @@ def main() -> None:
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
+        "resample_batch": resample_batch,
+        "batch_seed_stride": batch_seed_stride,
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
         "reference_time_variance_ratio_weight": reference_time_variance_ratio_weight,
         "reference_log_variance_weight": reference_log_variance_weight,
@@ -233,7 +270,9 @@ def main() -> None:
         ),
         "low_observation_eps": low_observation_eps,
         "train_reference_cache_hit": None if train_cached is None else train_cached.cache_hit,
-        "train_reference_cache_path": None if train_cached is None else str(train_cached.cache_path),
+        "train_reference_cache_path": None
+        if train_cached is None
+        else str(train_cached.cache_path),
         "eval_reference_cache_hit": eval_cached.cache_hit,
         "eval_reference_cache_path": str(eval_cached.cache_path),
         "final_loss": final_loss,
@@ -268,12 +307,16 @@ def main() -> None:
     output_dir = Path(config.get("output_dir", "outputs/nonlinear_direct_elbo_sine_mlp"))
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_loss_history(output_dir / "loss_history.csv", history)
-    (output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    (output_dir / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    np.savez(output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()})
+    np.savez(
+        output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
+    )
     np.savez(
         output_dir / "diagnostics.npz",
         x=np.asarray(eval_batch.x),
@@ -347,7 +390,9 @@ def _nonlinear_edge_elbo(
     z_t = outputs.filter_mean[None, ...] + jnp.sqrt(outputs.filter_var)[None, ...] * eps_t
     backward_mean = outputs.backward_a[None, ...] * z_t + outputs.backward_b[None, ...]
     z_tm1 = backward_mean + jnp.sqrt(outputs.backward_var)[None, ...] * eps_tm1
-    prev_mean, prev_var = _previous_filter_beliefs(outputs.filter_mean, outputs.filter_var, state_params)
+    prev_mean, prev_var = _previous_filter_beliefs(
+        outputs.filter_mean, outputs.filter_var, state_params
+    )
     observation_mean = nonlinear_observation_mean(z_t, batch.x[None, ...], observation)
     elbo = (
         _normal_log_prob(batch.y[None, ...], observation_mean, state_params.r)
@@ -372,7 +417,9 @@ def _previous_filter_beliefs(
     )
 
 
-def _normal_log_prob(value: jax.Array, mean: jax.Array | float, var: jax.Array | float) -> jax.Array:
+def _normal_log_prob(
+    value: jax.Array, mean: jax.Array | float, var: jax.Array | float
+) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
 
 

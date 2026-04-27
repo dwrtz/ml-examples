@@ -24,6 +24,7 @@ PLOT_METRICS = (
 
 CALIBRATION_LABELS = {
     "EKF-residualized nonlinear MC ELBO": "baseline",
+    "EKF-residualized nonlinear MC ELBO (resampled batches)": "resampled",
     "EKF-residualized nonlinear MC ELBO + reference variance calibration": "global",
     "EKF-residualized nonlinear MC ELBO + reference time variance calibration": "time",
     "EKF-residualized nonlinear MC ELBO + reference log-variance calibration": "log-var",
@@ -38,8 +39,12 @@ def main() -> None:
     parser.add_argument("--metrics", required=True, help="Comma-separated metrics.csv paths")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--baseline-metrics", default=None)
-    parser.add_argument("--patterns", default=None, help="Optional comma-separated x_pattern filter")
-    parser.add_argument("--weights", default=None, help="Optional comma-separated labels for --metrics")
+    parser.add_argument(
+        "--patterns", default=None, help="Optional comma-separated x_pattern filter"
+    )
+    parser.add_argument(
+        "--weights", default=None, help="Optional comma-separated labels for --metrics"
+    )
     args = parser.parse_args()
 
     metric_paths = _parse_paths(args.metrics)
@@ -49,17 +54,27 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    if args.baseline_metrics:
+    has_baseline_metrics = args.baseline_metrics is not None
+    if has_baseline_metrics:
         rows.extend(
             _load_rows(
                 Path(args.baseline_metrics),
                 weight="0",
                 patterns=patterns,
                 baseline_only=True,
+                include_baseline=True,
             )
         )
     for path, weight in zip(metric_paths, weights):
-        rows.extend(_load_rows(path, weight=weight, patterns=patterns, baseline_only=False))
+        rows.extend(
+            _load_rows(
+                path,
+                weight=weight,
+                patterns=patterns,
+                baseline_only=False,
+                include_baseline=not has_baseline_metrics,
+            )
+        )
     if not rows:
         raise ValueError("No rows matched the requested nonlinear sweep inputs")
 
@@ -100,6 +115,7 @@ def _load_rows(
     weight: str,
     patterns: set[str] | None,
     baseline_only: bool,
+    include_baseline: bool,
 ) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as stream:
         rows = []
@@ -109,7 +125,7 @@ def _load_rows(
             calibration = CALIBRATION_LABELS.get(row["model"], row["model"])
             if baseline_only and calibration != "baseline":
                 continue
-            if not baseline_only and calibration == "baseline":
+            if not include_baseline and calibration == "baseline":
                 continue
             rows.append({**row, "calibration": calibration, "weight": weight})
         return rows
@@ -163,7 +179,10 @@ def _plot(rows: list[dict[str, str]], path: Path) -> None:
     fig, axes = plt.subplots(len(PLOT_METRICS), 1, figsize=(12, 11), constrained_layout=True)
     for axis, (metric, title, target) in zip(axes, PLOT_METRICS):
         for index, key in enumerate(series):
-            values = [_metric_value(rows, pattern=pattern, series_key=key, metric=metric) for pattern in patterns]
+            values = [
+                _metric_value(rows, pattern=pattern, series_key=key, metric=metric)
+                for pattern in patterns
+            ]
             axis.bar(
                 x + (index - (len(series) - 1) / 2) * width,
                 values,
@@ -190,7 +209,14 @@ def _series(rows: Iterable[dict[str, str]]) -> list[tuple[str, str]]:
 
 
 def _series_rank(calibration: str) -> int:
-    order = {"baseline": 0, "global": 1, "time": 2, "log-var": 3, "low-obs": 4}
+    order = {
+        "baseline": 0,
+        "resampled": 1,
+        "global": 2,
+        "time": 3,
+        "log-var": 4,
+        "low-obs": 5,
+    }
     return order.get(calibration, 100)
 
 
