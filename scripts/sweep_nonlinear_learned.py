@@ -189,6 +189,18 @@ def _selected_model_specs(
             reference_log_variance_weight=1.0,
             reference_time_variance_ratio_weight=reference_time_variance_ratio_weight,
         ),
+        "direct_moment_low_obs_calibrated": ModelSpec(
+            key="direct_moment_low_obs_calibrated",
+            label="direct nonlinear MLP + reference moment and low-observation calibration",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            reference_mean_weight=1.0,
+            reference_log_variance_weight=1.0,
+            reference_low_observation_variance_ratio_weight=(
+                reference_low_observation_variance_ratio_weight
+            ),
+        ),
         "direct_moment_teacher_forced": ModelSpec(
             key="direct_moment_teacher_forced",
             label="direct nonlinear MLP + teacher-forced reference moment distillation",
