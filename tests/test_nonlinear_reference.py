@@ -13,6 +13,7 @@ from vbf.nonlinear import (
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
+    run_nonlinear_structured_mlp_teacher_forced,
 )
 from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 
@@ -169,6 +170,32 @@ def test_nonlinear_structured_mlp_filter_outputs_positive_variances() -> None:
     assert outputs.backward_var.shape == (3, 7)
     assert jnp.all(outputs.filter_var > 0.0)
     assert jnp.all(outputs.backward_var > 0.0)
+
+
+def test_nonlinear_structured_mlp_teacher_forced_outputs_positive_variances() -> None:
+    config = NonlinearDataConfig(batch_size=3, time_steps=7, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=132)
+    reference = nonlinear_grid_filter(
+        batch,
+        params,
+        data_config=config,
+        grid_config=GridReferenceConfig(grid_min=-8.0, grid_max=8.0, num_grid=101),
+    )
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(133), hidden_dim=8)
+
+    outputs = run_nonlinear_structured_mlp_teacher_forced(
+        mlp_params,
+        batch,
+        params,
+        reference.filter_mean,
+        reference.filter_var,
+        observation="x_sine",
+    )
+
+    assert outputs.filter_mean.shape == (3, 7)
+    assert outputs.filter_var.shape == (3, 7)
+    assert jnp.all(outputs.filter_var > 0.0)
 
 
 def test_nonlinear_reference_cache_hits_on_second_load(tmp_path) -> None:

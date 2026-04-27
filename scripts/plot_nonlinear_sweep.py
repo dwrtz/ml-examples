@@ -27,6 +27,8 @@ CALIBRATION_LABELS = {
     "EKF-residualized nonlinear MC ELBO (resampled batches)": "resampled",
     "EKF-residualized nonlinear MLP + reference moment distillation": "moment-distill",
     "direct nonlinear MLP + reference moment distillation": "direct-distill",
+    "EKF-residualized nonlinear MLP + teacher-forced reference moment distillation": ("moment-tf"),
+    "direct nonlinear MLP + teacher-forced reference moment distillation": "direct-tf",
     "EKF-residualized nonlinear MC ELBO + reference variance calibration": "global",
     "EKF-residualized nonlinear MC ELBO + reference time variance calibration": "time",
     "EKF-residualized nonlinear MC ELBO + reference log-variance calibration": "log-var",
@@ -216,10 +218,12 @@ def _series_rank(calibration: str) -> int:
         "resampled": 1,
         "moment-distill": 2,
         "direct-distill": 3,
-        "global": 4,
-        "time": 5,
-        "log-var": 6,
-        "low-obs": 7,
+        "moment-tf": 4,
+        "direct-tf": 5,
+        "global": 6,
+        "time": 7,
+        "log-var": 8,
+        "low-obs": 9,
     }
     return order.get(calibration, 100)
 

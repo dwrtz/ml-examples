@@ -406,6 +406,34 @@ def run_nonlinear_structured_mlp_filter(
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
+def run_nonlinear_structured_mlp_teacher_forced(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    target_filter_mean: jax.Array,
+    target_filter_var: jax.Array,
+    *,
+    observation: str = "x_sine",
+    min_var: float = 1e-6,
+) -> StructuredMLPOutputs:
+    """Run nonlinear structured updates using target previous beliefs as inputs."""
+
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
+    prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
+    return nonlinear_structured_mlp_step(
+        mlp_params,
+        prev_mean,
+        prev_var,
+        batch.x,
+        batch.y,
+        state_params,
+        observation=observation,
+        min_var=min_var,
+    )
+
+
 def nonlinear_structured_mlp_step(
     mlp_params: dict[str, jax.Array],
     prev_mean: jax.Array,

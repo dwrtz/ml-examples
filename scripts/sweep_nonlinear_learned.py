@@ -43,6 +43,7 @@ class ModelSpec:
     reference_variance_ratio_weight: float
     elbo_weight: float = 1.0
     reference_mean_weight: float = 0.0
+    teacher_forced: bool = False
     resample_batch: bool = False
     reference_time_variance_ratio_weight: float = 0.0
     reference_log_variance_weight: float = 0.0
@@ -142,6 +143,16 @@ def _selected_model_specs(
             reference_mean_weight=1.0,
             reference_log_variance_weight=1.0,
         ),
+        "direct_moment_teacher_forced": ModelSpec(
+            key="direct_moment_teacher_forced",
+            label="direct nonlinear MLP + teacher-forced reference moment distillation",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            reference_mean_weight=1.0,
+            reference_log_variance_weight=1.0,
+            teacher_forced=True,
+        ),
         "structured_elbo": ModelSpec(
             key="structured_elbo",
             label="EKF-residualized nonlinear MC ELBO",
@@ -163,6 +174,16 @@ def _selected_model_specs(
             elbo_weight=0.0,
             reference_mean_weight=1.0,
             reference_log_variance_weight=1.0,
+        ),
+        "structured_moment_teacher_forced": ModelSpec(
+            key="structured_moment_teacher_forced",
+            label="EKF-residualized nonlinear MLP + teacher-forced reference moment distillation",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            reference_mean_weight=1.0,
+            reference_log_variance_weight=1.0,
+            teacher_forced=True,
         ),
         "direct_elbo_ref_calibrated": ModelSpec(
             key="direct_elbo_ref_calibrated",
@@ -241,6 +262,7 @@ def _make_train_config(
         "num_elbo_samples": num_elbo_samples,
         "elbo_weight": spec.elbo_weight,
         "reference_mean_weight": spec.reference_mean_weight,
+        "teacher_forced": spec.teacher_forced,
         "resample_batch": spec.resample_batch,
         "batch_seed_stride": batch_seed_stride,
         "reference_variance_ratio_weight": spec.reference_variance_ratio_weight,
@@ -287,6 +309,7 @@ def _load_row(
         "num_elbo_samples": metrics["num_elbo_samples"],
         "elbo_weight": metrics["elbo_weight"],
         "reference_mean_weight": metrics["reference_mean_weight"],
+        "teacher_forced": metrics["teacher_forced"],
         "resample_batch": metrics["resample_batch"],
         "batch_seed_stride": metrics["batch_seed_stride"],
         "reference_variance_ratio_weight": metrics["reference_variance_ratio_weight"],
@@ -311,6 +334,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "num_elbo_samples",
         "elbo_weight",
         "reference_mean_weight",
+        "teacher_forced",
         "resample_batch",
         "batch_seed_stride",
         "reference_variance_ratio_weight",

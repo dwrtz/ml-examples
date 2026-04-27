@@ -19,6 +19,7 @@ from vbf.models.cells import (
     init_direct_mlp_params,
     init_structured_mlp_params,
     run_direct_mlp_filter,
+    run_direct_mlp_teacher_forced,
 )
 from vbf.nonlinear import (
     GridReferenceConfig,
@@ -27,6 +28,7 @@ from vbf.nonlinear import (
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
+    run_nonlinear_structured_mlp_teacher_forced,
 )
 from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 from vbf.train import adam_update, init_adam
@@ -68,6 +70,7 @@ def main() -> None:
         training_config.get("reference_low_observation_variance_ratio_weight", 0.0)
     )
     low_observation_eps = float(training_config.get("low_observation_eps", 1e-3))
+    teacher_forced = bool(training_config.get("teacher_forced", False))
     resample_batch = bool(training_config.get("resample_batch", False))
     batch_seed_stride = int(training_config.get("batch_seed_stride", 1))
     uses_reference_calibration = (
@@ -79,6 +82,8 @@ def main() -> None:
     )
     if resample_batch and uses_reference_calibration:
         raise ValueError("resample_batch is only supported for non-reference-calibrated training")
+    if teacher_forced and not uses_reference_calibration:
+        raise ValueError("teacher_forced requires reference targets")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_reference = None
@@ -130,13 +135,26 @@ def main() -> None:
         key: jax.Array,
     ) -> jax.Array:
         batch = EpisodeBatch(x=batch_x, y=batch_y, z=batch_z)
-        outputs = _run_model_filter(
-            str(config["model"]),
-            current_params,
-            batch,
-            state_params,
-            observation=data_config.observation,
-            min_var=min_var,
+        outputs = (
+            _run_model_teacher_forced(
+                str(config["model"]),
+                current_params,
+                batch,
+                state_params,
+                train_reference.filter_mean,
+                train_reference.filter_var,
+                observation=data_config.observation,
+                min_var=min_var,
+            )
+            if teacher_forced
+            else _run_model_filter(
+                str(config["model"]),
+                current_params,
+                batch,
+                state_params,
+                observation=data_config.observation,
+                min_var=min_var,
+            )
         )
         loss = jnp.asarray(0.0, dtype=batch_x.dtype)
         if elbo_weight != 0.0:
@@ -241,6 +259,18 @@ def main() -> None:
     )
     eval_batch = eval_cached.batch
     reference = eval_cached.reference
+    teacher_outputs = None
+    if teacher_forced:
+        teacher_outputs = _run_model_teacher_forced(
+            str(config["model"]),
+            params,
+            eval_batch,
+            state_params,
+            reference.filter_mean,
+            reference.filter_var,
+            observation=eval_data_config.observation,
+            min_var=min_var,
+        )
     learned_predictive_mean, learned_predictive_var = nonlinear_predictive_moments_from_filter(
         outputs.filter_mean,
         outputs.filter_var,
@@ -274,6 +304,7 @@ def main() -> None:
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "elbo_weight": elbo_weight,
         "reference_mean_weight": reference_mean_weight,
+        "teacher_forced": teacher_forced,
         "resample_batch": resample_batch,
         "batch_seed_stride": batch_seed_stride,
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
@@ -317,6 +348,28 @@ def main() -> None:
         "variance_ratio": float(jnp.mean(outputs.filter_var) / jnp.mean(reference.filter_var)),
         "mean_edge_covariance_trace": float(jnp.mean(jnp.trace(edge_cov, axis1=-2, axis2=-1))),
     }
+    if teacher_outputs is not None:
+        teacher_state_nll = scalar_gaussian_nll(
+            eval_batch.z,
+            teacher_outputs.filter_mean,
+            teacher_outputs.filter_var,
+        )
+        metrics.update(
+            {
+                "teacher_forced_state_nll": float(jnp.mean(teacher_state_nll)),
+                "teacher_forced_coverage_90": float(
+                    gaussian_interval_coverage(
+                        eval_batch.z,
+                        teacher_outputs.filter_mean,
+                        teacher_outputs.filter_var,
+                        z_score=1.6448536269514722,
+                    )
+                ),
+                "teacher_forced_variance_ratio": float(
+                    jnp.mean(teacher_outputs.filter_var) / jnp.mean(reference.filter_var)
+                ),
+            }
+        )
 
     output_dir = Path(config.get("output_dir", "outputs/nonlinear_direct_elbo_sine_mlp"))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +439,37 @@ def _run_model_filter(
             min_var=min_var,
         )
     return run_direct_mlp_filter(params, batch, state_params, min_var=min_var)
+
+
+def _run_model_teacher_forced(
+    model: str,
+    params: dict[str, jax.Array],
+    batch,
+    state_params: LinearGaussianParams,
+    target_filter_mean: jax.Array,
+    target_filter_var: jax.Array,
+    *,
+    observation: str,
+    min_var: float,
+):
+    if model == "structured_elbo_sine_mlp":
+        return run_nonlinear_structured_mlp_teacher_forced(
+            params,
+            batch,
+            state_params,
+            target_filter_mean,
+            target_filter_var,
+            observation=observation,
+            min_var=min_var,
+        )
+    return run_direct_mlp_teacher_forced(
+        params,
+        batch,
+        state_params,
+        target_filter_mean,
+        target_filter_var,
+        min_var=min_var,
+    )
 
 
 def _nonlinear_edge_elbo(
