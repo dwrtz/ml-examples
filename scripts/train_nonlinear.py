@@ -55,6 +55,8 @@ def main() -> None:
     evaluation_config = config.get("evaluation", {})
     reference_config = GridReferenceConfig(**config.get("reference", {}))
     min_var = float(training_config.get("min_var", 1e-6))
+    elbo_weight = float(training_config.get("elbo_weight", 1.0))
+    reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
     reference_variance_ratio_weight = float(
         training_config.get("reference_variance_ratio_weight", 0.0)
     )
@@ -69,7 +71,8 @@ def main() -> None:
     resample_batch = bool(training_config.get("resample_batch", False))
     batch_seed_stride = int(training_config.get("batch_seed_stride", 1))
     uses_reference_calibration = (
-        reference_variance_ratio_weight != 0.0
+        reference_mean_weight != 0.0
+        or reference_variance_ratio_weight != 0.0
         or reference_time_variance_ratio_weight != 0.0
         or reference_log_variance_weight != 0.0
         or reference_low_observation_variance_ratio_weight != 0.0
@@ -135,16 +138,25 @@ def main() -> None:
             observation=data_config.observation,
             min_var=min_var,
         )
-        loss = -jnp.mean(
-            _nonlinear_edge_elbo(
-                outputs,
-                batch,
-                state_params,
-                key,
-                observation=data_config.observation,
-                num_samples=int(training_config.get("num_elbo_samples", 8)),
+        loss = jnp.asarray(0.0, dtype=batch_x.dtype)
+        if elbo_weight != 0.0:
+            loss = loss - elbo_weight * jnp.mean(
+                _nonlinear_edge_elbo(
+                    outputs,
+                    batch,
+                    state_params,
+                    key,
+                    observation=data_config.observation,
+                    num_samples=int(training_config.get("num_elbo_samples", 8)),
+                )
             )
-        )
+        if reference_mean_weight != 0.0:
+            if train_reference is None:
+                raise ValueError("train_reference is required for reference mean distillation")
+            loss = loss + reference_mean_weight * jnp.mean(
+                (outputs.filter_mean - train_reference.filter_mean) ** 2
+                / jnp.maximum(train_reference.filter_var, min_var)
+            )
         if reference_variance_ratio_weight != 0.0:
             if reference_mean_filter_var is None:
                 raise ValueError("reference_mean_filter_var is required for reference calibration")
@@ -260,6 +272,8 @@ def main() -> None:
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
+        "elbo_weight": elbo_weight,
+        "reference_mean_weight": reference_mean_weight,
         "resample_batch": resample_batch,
         "batch_seed_stride": batch_seed_stride,
         "reference_variance_ratio_weight": reference_variance_ratio_weight,

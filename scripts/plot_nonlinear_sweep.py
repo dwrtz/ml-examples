@@ -25,6 +25,7 @@ PLOT_METRICS = (
 CALIBRATION_LABELS = {
     "EKF-residualized nonlinear MC ELBO": "baseline",
     "EKF-residualized nonlinear MC ELBO (resampled batches)": "resampled",
+    "EKF-residualized nonlinear MLP + reference moment distillation": "moment-distill",
     "EKF-residualized nonlinear MC ELBO + reference variance calibration": "global",
     "EKF-residualized nonlinear MC ELBO + reference time variance calibration": "time",
     "EKF-residualized nonlinear MC ELBO + reference log-variance calibration": "log-var",
@@ -212,10 +213,11 @@ def _series_rank(calibration: str) -> int:
     order = {
         "baseline": 0,
         "resampled": 1,
-        "global": 2,
-        "time": 3,
-        "log-var": 4,
-        "low-obs": 5,
+        "moment-distill": 2,
+        "global": 3,
+        "time": 4,
+        "log-var": 5,
+        "low-obs": 6,
     }
     return order.get(calibration, 100)
 

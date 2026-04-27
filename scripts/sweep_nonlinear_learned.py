@@ -41,6 +41,8 @@ class ModelSpec:
     label: str
     objective: str
     reference_variance_ratio_weight: float
+    elbo_weight: float = 1.0
+    reference_mean_weight: float = 0.0
     resample_batch: bool = False
     reference_time_variance_ratio_weight: float = 0.0
     reference_log_variance_weight: float = 0.0
@@ -144,6 +146,15 @@ def _selected_model_specs(
             reference_variance_ratio_weight=0.0,
             resample_batch=True,
         ),
+        "structured_moment_distilled": ModelSpec(
+            key="structured_moment_distilled",
+            label="EKF-residualized nonlinear MLP + reference moment distillation",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            reference_mean_weight=1.0,
+            reference_log_variance_weight=1.0,
+        ),
         "direct_elbo_ref_calibrated": ModelSpec(
             key="direct_elbo_ref_calibrated",
             label="direct nonlinear MC ELBO + reference variance calibration",
@@ -219,6 +230,8 @@ def _make_train_config(
         **base_train_config["training"],
         "steps": steps,
         "num_elbo_samples": num_elbo_samples,
+        "elbo_weight": spec.elbo_weight,
+        "reference_mean_weight": spec.reference_mean_weight,
         "resample_batch": spec.resample_batch,
         "batch_seed_stride": batch_seed_stride,
         "reference_variance_ratio_weight": spec.reference_variance_ratio_weight,
@@ -263,6 +276,8 @@ def _load_row(
         "time_steps": config["data"]["time_steps"],
         "steps": metrics["training_steps"],
         "num_elbo_samples": metrics["num_elbo_samples"],
+        "elbo_weight": metrics["elbo_weight"],
+        "reference_mean_weight": metrics["reference_mean_weight"],
         "resample_batch": metrics["resample_batch"],
         "batch_seed_stride": metrics["batch_seed_stride"],
         "reference_variance_ratio_weight": metrics["reference_variance_ratio_weight"],
@@ -285,6 +300,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "time_steps",
         "steps",
         "num_elbo_samples",
+        "elbo_weight",
+        "reference_mean_weight",
         "resample_batch",
         "batch_seed_stride",
         "reference_variance_ratio_weight",
