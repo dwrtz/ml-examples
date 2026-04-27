@@ -24,11 +24,11 @@ from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
     make_nonlinear_batch,
-    nonlinear_grid_filter,
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
 )
+from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 from vbf.train import adam_update, init_adam
 
 
@@ -39,6 +39,8 @@ SUPPORTED_MODELS = {"direct_elbo_sine_mlp", "structured_elbo_sine_mlp"}
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--cache-dir", default="outputs/cache/nonlinear_reference")
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args()
 
     with Path(args.config).open() as stream:
@@ -66,17 +68,22 @@ def main() -> None:
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_reference = None
+    train_cached = None
     if (
         reference_variance_ratio_weight != 0.0
         or reference_time_variance_ratio_weight != 0.0
         or reference_low_observation_variance_ratio_weight != 0.0
     ):
-        train_reference = nonlinear_grid_filter(
-            train_batch,
+        train_cached = load_or_compute_nonlinear_reference(
+            data_config,
             state_params,
-            data_config=data_config,
+            seed=int(config["seed"]),
             grid_config=reference_config,
+            cache_dir=Path(args.cache_dir),
+            use_cache=not args.no_cache,
         )
+        train_batch = train_cached.batch
+        train_reference = train_cached.reference
     reference_mean_filter_var = (
         jnp.mean(train_reference.filter_var) if train_reference is not None else None
     )
@@ -89,10 +96,11 @@ def main() -> None:
         low_observation_weights_t = 1.0 / (mean_x2_t + low_observation_eps)
         low_observation_weights_t = low_observation_weights_t / jnp.mean(low_observation_weights_t)
     eval_data_config = NonlinearDataConfig(**{**config["data"], **evaluation_config.get("data", {})})
+    eval_seed = int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000))
     eval_batch = make_nonlinear_batch(
         eval_data_config,
         state_params,
-        seed=int(config["seed"]) + int(evaluation_config.get("seed_offset", 10_000)),
+        seed=eval_seed,
     )
 
     params = _init_model_params(
@@ -166,12 +174,16 @@ def main() -> None:
         observation=eval_data_config.observation,
         min_var=min_var,
     )
-    reference = nonlinear_grid_filter(
-        eval_batch,
+    eval_cached = load_or_compute_nonlinear_reference(
+        eval_data_config,
         state_params,
-        data_config=eval_data_config,
+        seed=eval_seed,
         grid_config=reference_config,
+        cache_dir=Path(args.cache_dir),
+        use_cache=not args.no_cache,
     )
+    eval_batch = eval_cached.batch
+    reference = eval_cached.reference
     learned_predictive_mean, learned_predictive_var = nonlinear_predictive_moments_from_filter(
         outputs.filter_mean,
         outputs.filter_var,
@@ -209,6 +221,10 @@ def main() -> None:
             reference_low_observation_variance_ratio_weight
         ),
         "low_observation_eps": low_observation_eps,
+        "train_reference_cache_hit": None if train_cached is None else train_cached.cache_hit,
+        "train_reference_cache_path": None if train_cached is None else str(train_cached.cache_path),
+        "eval_reference_cache_hit": eval_cached.cache_hit,
+        "eval_reference_cache_path": str(eval_cached.cache_path),
         "final_loss": final_loss,
         "state_rmse": float(rmse_global(outputs.filter_mean, eval_batch.z)),
         "reference_state_rmse": float(rmse_global(reference.filter_mean, eval_batch.z)),
@@ -266,6 +282,11 @@ def main() -> None:
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
     print(f"Wrote {summary_path}")
+    if train_cached is not None:
+        train_cache_status = "hit" if train_cached.cache_hit else "miss"
+        print(f"Train reference cache {train_cache_status}: {train_cached.cache_path}")
+    eval_cache_status = "hit" if eval_cached.cache_hit else "miss"
+    print(f"Eval reference cache {eval_cache_status}: {eval_cached.cache_path}")
 
 
 def _init_model_params(

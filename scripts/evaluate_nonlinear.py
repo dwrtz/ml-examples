@@ -14,15 +14,16 @@ from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
-    make_nonlinear_batch,
-    nonlinear_grid_filter,
 )
+from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 from vbf.data import LinearGaussianParams
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--cache-dir", default="outputs/cache/nonlinear_reference")
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args()
 
     with Path(args.config).open() as stream:
@@ -31,13 +32,16 @@ def main() -> None:
     data_config = NonlinearDataConfig(**config["data"])
     state_params = LinearGaussianParams(**config["state_space"])
     reference_config = GridReferenceConfig(**config.get("reference", {}))
-    batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
-    reference = nonlinear_grid_filter(
-        batch,
+    cached = load_or_compute_nonlinear_reference(
+        data_config,
         state_params,
-        data_config=data_config,
+        seed=int(config["seed"]),
         grid_config=reference_config,
+        cache_dir=Path(args.cache_dir),
+        use_cache=not args.no_cache,
     )
+    batch = cached.batch
+    reference = cached.reference
     state_nll = scalar_gaussian_nll(batch.z, reference.filter_mean, reference.filter_var)
     predictive_nll = scalar_gaussian_nll(
         batch.y,
@@ -63,6 +67,8 @@ def main() -> None:
         ),
         "mean_filter_variance": float(jnp.mean(reference.filter_var)),
         "mean_predictive_variance": float(jnp.mean(reference.predictive_var)),
+        "reference_cache_hit": cached.cache_hit,
+        "reference_cache_path": str(cached.cache_path),
     }
 
     output_dir = Path(config.get("output_dir", "outputs/nonlinear_sine_observation"))
@@ -84,6 +90,8 @@ def main() -> None:
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics), encoding="utf-8")
     print(f"Wrote {summary_path}")
+    cache_status = "hit" if cached.cache_hit else "miss"
+    print(f"Reference cache {cache_status}: {cached.cache_path}")
 
 
 def _render_summary(name: str, metrics: dict[str, float | int | str]) -> str:

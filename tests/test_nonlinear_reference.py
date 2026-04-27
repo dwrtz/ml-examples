@@ -12,6 +12,7 @@ from vbf.nonlinear import (
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
 )
+from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 
 
 def test_nonlinear_batch_generates_x_y_and_z() -> None:
@@ -128,3 +129,30 @@ def test_nonlinear_structured_mlp_filter_outputs_positive_variances() -> None:
     assert outputs.backward_var.shape == (3, 7)
     assert jnp.all(outputs.filter_var > 0.0)
     assert jnp.all(outputs.backward_var > 0.0)
+
+
+def test_nonlinear_reference_cache_hits_on_second_load(tmp_path) -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    grid_config = GridReferenceConfig(grid_min=-8.0, grid_max=8.0, num_grid=101)
+
+    first = load_or_compute_nonlinear_reference(
+        config,
+        params,
+        seed=129,
+        grid_config=grid_config,
+        cache_dir=tmp_path,
+    )
+    second = load_or_compute_nonlinear_reference(
+        config,
+        params,
+        seed=129,
+        grid_config=grid_config,
+        cache_dir=tmp_path,
+    )
+
+    assert not first.cache_hit
+    assert second.cache_hit
+    assert first.cache_path == second.cache_path
+    assert jnp.allclose(first.batch.z, second.batch.z)
+    assert jnp.allclose(first.reference.filter_var, second.reference.filter_var)

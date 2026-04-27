@@ -56,7 +56,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo plot-nonlinear compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
 
 help:
 	@printf "Targets:\n"
@@ -71,6 +71,7 @@ help:
 	@printf "  evaluate-linear    Run linear-Gaussian evaluation\n"
 	@printf "  plot-linear        Plot linear-Gaussian results\n"
 	@printf "  plot-linear-elbo   Plot ELBO linear-Gaussian results\n"
+	@printf "  plot-nonlinear     Plot nonlinear run diagnostics\n"
 	@printf "  compare-linear     Compare supervised and ELBO linear-Gaussian runs\n"
 	@printf "  sweep-linear       Train and aggregate linear-Gaussian seed sweep\n"
 	@printf "  sweep-elbo-ablation Run ELBO MC-sample/training-budget ablation\n"
@@ -128,6 +129,9 @@ plot-linear:
 
 plot-linear-elbo:
 	$(UV) run python scripts/plot_linear_gaussian.py --run-dir $(RUN_DIR_ELBO)
+
+plot-nonlinear:
+	$(UV) run python scripts/plot_nonlinear.py --run-dir $(RUN_DIR)
 
 compare-linear:
 	$(UV) run python scripts/compare_linear_gaussian.py --supervised-run-dir $(RUN_DIR) --elbo-run-dir $(RUN_DIR_ELBO) --output $(LINEAR_COMPARISON)
