@@ -62,6 +62,11 @@ class NonlinearReferenceShapeOutputs(NamedTuple):
     credible_width_90: jax.Array
 
 
+class NonlinearReferenceGridOutputs(NamedTuple):
+    grid: jax.Array
+    filter_mass: jax.Array
+
+
 def make_nonlinear_batch(
     config: NonlinearDataConfig,
     params: LinearGaussianParams,
@@ -258,6 +263,67 @@ def nonlinear_grid_filter_shape_diagnostics(
     init_log_mass = jnp.broadcast_to(prior_log_mass[None, :], (batch.x.shape[0], grid.shape[0]))
     _, outputs = jax.lax.scan(step, init_log_mass, (x_tb, y_tb))
     return NonlinearReferenceShapeOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def nonlinear_grid_filter_masses(
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    data_config: NonlinearDataConfig,
+    grid_config: GridReferenceConfig = GridReferenceConfig(),
+) -> NonlinearReferenceGridOutputs:
+    """Return full grid posterior masses for reference-only diagnostics."""
+
+    if grid_config.num_grid < 3:
+        raise ValueError("num_grid must be at least 3")
+    if grid_config.grid_max <= grid_config.grid_min:
+        raise ValueError("grid_max must be greater than grid_min")
+
+    grid = jnp.linspace(
+        grid_config.grid_min,
+        grid_config.grid_max,
+        grid_config.num_grid,
+        dtype=jnp.float64,
+    )
+    dz = (grid_config.grid_max - grid_config.grid_min) / (grid_config.num_grid - 1)
+    log_dz = jnp.log(dz)
+    prior_log_mass = _normal_log_prob(grid, params.m0, params.p0) + log_dz
+    prior_log_mass = prior_log_mass - jsp.special.logsumexp(prior_log_mass)
+    transition_log_mass = _normal_log_prob(grid[None, :], grid[:, None], params.q) + log_dz
+    transition_log_mass = transition_log_mass - jsp.special.logsumexp(
+        transition_log_mass,
+        axis=1,
+        keepdims=True,
+    )
+
+    x_tb = batch.x.T
+    y_tb = batch.y.T
+
+    def step(prev_log_mass: jax.Array, obs: tuple[jax.Array, jax.Array]):
+        x_t, y_t = obs
+        pred_log_mass = jsp.special.logsumexp(
+            prev_log_mass[:, :, None] + transition_log_mass[None, :, :],
+            axis=1,
+        )
+        obs_mean = nonlinear_observation_mean(
+            grid[None, :],
+            x_t[:, None],
+            data_config.observation,
+        )
+        filter_log_mass = pred_log_mass + _normal_log_prob(y_t[:, None], obs_mean, params.r)
+        filter_log_mass = filter_log_mass - jsp.special.logsumexp(
+            filter_log_mass,
+            axis=1,
+            keepdims=True,
+        )
+        return filter_log_mass, jnp.exp(filter_log_mass)
+
+    init_log_mass = jnp.broadcast_to(prior_log_mass[None, :], (batch.x.shape[0], grid.shape[0]))
+    _, mass_tbg = jax.lax.scan(step, init_log_mass, (x_tb, y_tb))
+    return NonlinearReferenceGridOutputs(
+        grid=grid,
+        filter_mass=jnp.swapaxes(mass_tbg, 0, 1),
+    )
 
 
 def nonlinear_observation_mean(
