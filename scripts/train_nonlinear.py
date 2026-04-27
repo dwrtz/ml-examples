@@ -15,6 +15,7 @@ import yaml
 from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
+    direct_mlp_step,
     edge_mean_cov_from_outputs,
     init_direct_mlp_params,
     init_structured_mlp_params,
@@ -27,6 +28,7 @@ from vbf.nonlinear import (
     make_nonlinear_batch,
     nonlinear_observation_mean,
     nonlinear_predictive_moments_from_filter,
+    nonlinear_structured_mlp_step,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
 )
@@ -59,6 +61,8 @@ def main() -> None:
     min_var = float(training_config.get("min_var", 1e-6))
     elbo_weight = float(training_config.get("elbo_weight", 1.0))
     reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
+    reference_rollout_weight = float(training_config.get("reference_rollout_weight", 0.0))
+    reference_rollout_horizon = int(training_config.get("reference_rollout_horizon", 1))
     reference_variance_ratio_weight = float(
         training_config.get("reference_variance_ratio_weight", 0.0)
     )
@@ -75,6 +79,7 @@ def main() -> None:
     batch_seed_stride = int(training_config.get("batch_seed_stride", 1))
     uses_reference_calibration = (
         reference_mean_weight != 0.0
+        or reference_rollout_weight != 0.0
         or reference_variance_ratio_weight != 0.0
         or reference_time_variance_ratio_weight != 0.0
         or reference_log_variance_weight != 0.0
@@ -84,6 +89,10 @@ def main() -> None:
         raise ValueError("resample_batch is only supported for non-reference-calibrated training")
     if teacher_forced and not uses_reference_calibration:
         raise ValueError("teacher_forced requires reference targets")
+    if reference_rollout_horizon <= 0:
+        raise ValueError("reference_rollout_horizon must be positive")
+    if reference_rollout_horizon > data_config.time_steps:
+        raise ValueError("reference_rollout_horizon cannot exceed data time_steps")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_reference = None
@@ -174,6 +183,19 @@ def main() -> None:
             loss = loss + reference_mean_weight * jnp.mean(
                 (outputs.filter_mean - train_reference.filter_mean) ** 2
                 / jnp.maximum(train_reference.filter_var, min_var)
+            )
+        if reference_rollout_weight != 0.0:
+            if train_reference is None:
+                raise ValueError("train_reference is required for reference rollout distillation")
+            loss = loss + reference_rollout_weight * _reference_rollout_moment_loss(
+                str(config["model"]),
+                current_params,
+                batch,
+                state_params,
+                train_reference,
+                horizon=reference_rollout_horizon,
+                observation=data_config.observation,
+                min_var=min_var,
             )
         if reference_variance_ratio_weight != 0.0:
             if reference_mean_filter_var is None:
@@ -304,6 +326,8 @@ def main() -> None:
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "elbo_weight": elbo_weight,
         "reference_mean_weight": reference_mean_weight,
+        "reference_rollout_weight": reference_rollout_weight,
+        "reference_rollout_horizon": reference_rollout_horizon,
         "teacher_forced": teacher_forced,
         "resample_batch": resample_batch,
         "batch_seed_stride": batch_seed_stride,
@@ -470,6 +494,81 @@ def _run_model_teacher_forced(
         target_filter_var,
         min_var=min_var,
     )
+
+
+def _run_model_step(
+    model: str,
+    params: dict[str, jax.Array],
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    observation: str,
+    min_var: float,
+):
+    if model == "structured_elbo_sine_mlp":
+        return nonlinear_structured_mlp_step(
+            params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            observation=observation,
+            min_var=min_var,
+        )
+    return direct_mlp_step(
+        params,
+        prev_mean,
+        prev_var,
+        x_t,
+        y_t,
+        state_params,
+        min_var=min_var,
+    )
+
+
+def _reference_rollout_moment_loss(
+    model: str,
+    params: dict[str, jax.Array],
+    batch,
+    state_params: LinearGaussianParams,
+    reference,
+    *,
+    horizon: int,
+    observation: str,
+    min_var: float,
+) -> jax.Array:
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=batch.x.dtype)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=batch.x.dtype)
+    prev_mean = jnp.concatenate((initial_mean, reference.filter_mean[:, :-1]), axis=1)
+    prev_var = jnp.concatenate((initial_var, reference.filter_var[:, :-1]), axis=1)
+    loss = jnp.asarray(0.0, dtype=batch.x.dtype)
+    terms = 0
+    for offset in range(horizon):
+        outputs = _run_model_step(
+            model,
+            params,
+            prev_mean,
+            prev_var,
+            batch.x[:, offset:],
+            batch.y[:, offset:],
+            state_params,
+            observation=observation,
+            min_var=min_var,
+        )
+        target_mean = reference.filter_mean[:, offset:]
+        target_var = reference.filter_var[:, offset:]
+        target_var = jnp.maximum(target_var, min_var)
+        loss = loss + jnp.mean((outputs.filter_mean - target_mean) ** 2 / target_var)
+        loss = loss + jnp.mean((jnp.log(outputs.filter_var) - jnp.log(target_var)) ** 2)
+        terms += 2
+        if offset != horizon - 1:
+            prev_mean = outputs.filter_mean[:, :-1]
+            prev_var = outputs.filter_var[:, :-1]
+    return loss / terms
 
 
 def _nonlinear_edge_elbo(

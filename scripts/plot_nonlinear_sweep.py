@@ -29,6 +29,9 @@ CALIBRATION_LABELS = {
     "direct nonlinear MLP + reference moment distillation": "direct-distill",
     "EKF-residualized nonlinear MLP + teacher-forced reference moment distillation": ("moment-tf"),
     "direct nonlinear MLP + teacher-forced reference moment distillation": "direct-tf",
+    "EKF-residualized nonlinear MLP + h2 reference rollout distillation": "rollout-h2",
+    "EKF-residualized nonlinear MLP + h4 reference rollout distillation": "rollout-h4",
+    "EKF-residualized nonlinear MLP + h8 reference rollout distillation": "rollout-h8",
     "EKF-residualized nonlinear MC ELBO + reference variance calibration": "global",
     "EKF-residualized nonlinear MC ELBO + reference time variance calibration": "time",
     "EKF-residualized nonlinear MC ELBO + reference log-variance calibration": "log-var",
@@ -196,6 +199,8 @@ def _plot(rows: list[dict[str, str]], path: Path) -> None:
             )
         if target is not None:
             axis.axhline(target, color="black", linestyle="--", linewidth=1)
+        if metric == "variance_ratio":
+            axis.set_yscale("log")
         if metric == "coverage_90":
             reference = [_reference_coverage(rows, pattern) for pattern in patterns]
             axis.plot(x, reference, color="black", marker="o", linewidth=1.2, label="grid ref")
@@ -220,15 +225,27 @@ def _series_rank(calibration: str) -> int:
         "direct-distill": 3,
         "moment-tf": 4,
         "direct-tf": 5,
-        "global": 6,
-        "time": 7,
-        "log-var": 8,
-        "low-obs": 9,
+        "rollout-h2": 6,
+        "rollout-h4": 7,
+        "rollout-h8": 8,
+        "global": 9,
+        "time": 10,
+        "log-var": 11,
+        "low-obs": 12,
     }
     return order.get(calibration, 100)
 
 
 def _weight_rank(weight: str) -> float:
+    named_order = {
+        "self-fed": 0.0,
+        "teacher": 1.0,
+        "rollout": 2.0,
+        "rollout250": 2.5,
+        "rollout1000": 3.0,
+    }
+    if weight in named_order:
+        return named_order[weight]
     try:
         return float(weight)
     except ValueError:

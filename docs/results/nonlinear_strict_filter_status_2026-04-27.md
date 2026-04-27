@@ -247,10 +247,90 @@ Results:
 | intermittent distilled | 250 | 25.896 | 0.435 | 0.068 |
 | intermittent distilled | 1000 | 25.486 | 0.393 | 0.070 |
 
-Interpretation: direct moment supervision still does not make this
-EKF-residualized update match reference moments. That points toward architecture
-or optimization constraints in the current update parameterization, rather than
-just the ELBO objective.
+Interpretation at this stage: self-fed direct moment supervision did not make
+the EKF-residualized update match reference moments. That pointed toward either
+update parameterization or rollout/compounding-error constraints.
+
+### Direct And Teacher-Forced Moment Distillation
+
+The follow-up diagnostic added a direct nonlinear MLP moment-distillation mode
+and teacher-forced variants for both structured and direct heads.
+
+The direct self-fed head is much stronger than the structured self-fed head:
+
+| case | model | steps | state NLL | coverage 90 | variance ratio |
+|---|---|---:|---:|---:|---:|
+| weak | direct moment distilled | 250 | 3.260 | 0.664 | 0.317 |
+| weak | direct moment distilled | 1000 | 2.806 | 0.832 | 0.665 |
+| intermittent | direct moment distilled | 250 | 3.258 | 0.664 | 0.313 |
+| intermittent | direct moment distilled | 1000 | 2.806 | 0.832 | 0.656 |
+
+Teacher-forced moment distillation then separated one-step capacity from rollout
+stability:
+
+| case | head | eval mode | state NLL | coverage 90 | variance ratio |
+|---|---|---|---:|---:|---:|
+| weak | structured | rollout | 32.420 | 0.333 | 0.510 |
+| weak | structured | teacher-forced | 2.790 | 0.888 | 1.112 |
+| intermittent | structured | rollout | 3.219 | 0.767 | 4540.661 |
+| intermittent | structured | teacher-forced | 2.761 | 0.901 | 1.034 |
+| weak | direct | rollout | 2.809 | 0.830 | 0.657 |
+| weak | direct | teacher-forced | 2.809 | 0.828 | 0.658 |
+| intermittent | direct | rollout | 2.809 | 0.831 | 0.648 |
+| intermittent | direct | teacher-forced | 2.808 | 0.828 | 0.648 |
+
+This changes the interpretation. The structured EKF-residualized head can learn
+the one-step reference moment map when fed reference previous beliefs. Its
+failure is self-fed rollout stability, not one-step representational capacity.
+The direct head is stable under both teacher-forced and self-fed evaluation.
+
+### Short-Horizon Rollout Distillation
+
+The next diagnostic trained the structured head with short self-fed rollouts
+initialized from reference beliefs:
+
+```text
+structured_moment_rollout_h{2,4,8}
+```
+
+The 250-step weak/intermittent results were:
+
+| case | rollout horizon | state NLL | coverage 90 | variance ratio |
+|---|---:|---:|---:|---:|
+| weak | 2 | 3.257 | 0.775 | 1.061 |
+| weak | 4 | 2.933 | 0.834 | 1.127 |
+| weak | 8 | 18.662 | 0.396 | 0.891 |
+| intermittent | 2 | 7.653 | 0.783 | 1.215 |
+| intermittent | 4 | 7.974 | 0.767 | 0.961 |
+| intermittent | 8 | 10.311 | 0.698 | 0.924 |
+
+Horizon 4 materially improves the weak-observation structured head, bringing
+coverage near the direct head while keeping variance slightly above the grid
+reference. The intermittent case remains poor: short-horizon rollout
+distillation fixes variance scale but not state NLL.
+
+The comparison plot is at:
+
+```text
+outputs/nonlinear_rollout_distillation_250/plots/sweep_comparison.png
+```
+
+The best short-horizon setting, horizon 4, was then run for 1000 steps:
+
+| case | rollout horizon | steps | state NLL | coverage 90 | variance ratio |
+|---|---:|---:|---:|---:|---:|
+| weak | 4 | 1000 | 2.808 | 0.881 | 0.993 |
+| intermittent | 4 | 1000 | 3.340 | 0.861 | 1.124 |
+
+This is a real recovery for the structured branch. It still trails the direct
+head on intermittent NLL, but no longer has the catastrophic rollout failure
+seen in teacher-forced one-step training.
+
+The expanded comparison plot is at:
+
+```text
+outputs/nonlinear_rollout_distillation_h4_1000/plots/sweep_comparison.png
+```
 
 ## Current Interpretation
 
@@ -260,74 +340,68 @@ The nonlinear benchmark is now telling a sharper story:
 2. The zero-observation stress case is solved by reference variance calibration.
 3. Weak/intermittent nonlinear cases remain badly under-dispersed.
 4. More steps, naive resampling, log-variance calibration, and direct moment
-   distillation do not close the gap.
+   distillation for the structured self-fed head do not close the gap.
 5. The moment-matched Gaussian reference is good enough that a mixture posterior
    is not the immediate missing piece.
-6. The likely bottleneck is the current EKF-residualized nonlinear update
-   parameterization or its optimization dynamics.
+6. The structured EKF-residualized head can learn the one-step map under teacher
+   forcing, but its self-fed rollout is unstable.
+7. Short-horizon rollout distillation stabilizes the structured head at 1000
+   steps, especially with horizon 4.
+8. The direct head is a strong positive control and remains stable in rollout.
 
-In short: the model is not yet learning the reference Gaussian moments, even
-when those moments are directly supervised.
+In short: the current structured nonlinear update is not primarily blocked by
+one-step capacity. It is blocked by rollout stability/compounding error, and
+rollout distillation is a viable training fix. The direct head remains the
+cleaner architecture unless the structured branch has other desired inductive
+biases.
 
 ## Suggested Next Decisions
 
-### Decision 1: Investigate Architecture Versus Optimization
+### Decision 1: Investigate Rollout Stability
 
-The next diagnostic should distinguish whether the EKF-residualized update is
-too constrained or whether the training setup is failing to optimize it.
+The next diagnostic should target the gap between teacher-forced one-step
+performance and self-fed rollout behavior.
 
 Possible checks:
 
-- Increase hidden dimension for moment distillation only.
-- Train moment distillation with a larger learning rate sweep.
-- Add gradient/parameter diagnostics for the variance-scale output.
-- Compare current EKF-residualized update against a direct mean/log-variance
-  update head with the same inputs.
+- compare direct moment distillation and horizon-4 rollout distillation with
+  matched 250/1000-step budgets
+- add rollout stability plots for variance ratio and NLL by horizon
+- inspect variance-path saturation diagnostics for the structured head during
+  intermittent rollouts
 
-### Decision 2: Add A Less-Structured Nonlinear Filter Head
+### Decision 2: Promote Direct Head To Main Nonlinear Candidate
 
-The most informative next model ablation would be a less-structured Gaussian
-filter head that predicts:
-
-```text
-filter_mean
-log_filter_var
-backward_a
-backward_b
-log_backward_var
-```
-
-directly from `(prev_mean, prev_var, x_t, y_t, q, r)`, without the EKF gain/base
-variance formula. Train it first with moment distillation, not ELBO.
-
-If this direct head matches reference moments, the EKF-residualized update is the
-bottleneck. If it also fails, the issue is likely optimization/features or the
-stepwise Markov Gaussian parameterization more broadly.
+The direct head should remain in the suite and is still the simpler nonlinear
+candidate. The structured head is viable with rollout distillation, so the next
+decision is architecture preference rather than a hard failure diagnosis.
 
 ### Decision 3: Defer Mamba/Mixture Until This Is Resolved
 
-The current evidence does not yet justify Mamba or a learned mixture filter as
-the next primary branch. The reference moment Gaussian is already strong, and a
-directly supervised current model still fails to match it. The next best work is
-therefore a controlled Gaussian update ablation, not a bigger sequence model.
+The current evidence still does not justify Mamba or a learned mixture filter as
+the next primary branch. The reference moment Gaussian is already strong, and
+the direct Gaussian head can learn useful moments. The next best work is
+therefore rollout-stability training for strict Gaussian filters.
 
 ## Suggested Immediate Next Experiment
 
-Implement and run:
+Run a matched 1000-step comparison with direct and rollout-distilled structured
+heads:
 
 ```text
-structured_direct_moment_distilled
+direct_moment_distilled
+structured_moment_rollout_h4
 ```
 
-where the update is less EKF-residualized but still produces a Gaussian strict
-filter. Run weak/intermittent at 250 steps and 1000 steps.
+Use weak/intermittent with matched seeds, training budgets, and plot reporting.
 
 Interpretation:
 
-- If direct moment distillation succeeds, keep Gaussian posterior family and
-  redesign the nonlinear update architecture.
-- If direct moment distillation fails, inspect optimization/features before
-  adding richer posterior families.
+- If direct remains comparable or better, prefer it as the default nonlinear
+  strict Gaussian filter.
+- If rollout-distilled structured wins under matched budgets or seed sweeps,
+  keep the EKF-residualized inductive bias and standardize rollout
+  distillation.
 
 ## Relevant Commands
 
@@ -342,9 +416,41 @@ uv run python scripts/sweep_nonlinear_learned.py \
 
 uv run python scripts/sweep_nonlinear_learned.py \
   --configs experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
-  --models structured_moment_distilled \
+  --models structured_moment_distilled,direct_moment_distilled \
   --steps 1000 \
   --output-dir outputs/nonlinear_moment_distillation_1000
+
+uv run python scripts/sweep_nonlinear_learned.py \
+  --configs experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+  --models structured_moment_teacher_forced,direct_moment_teacher_forced \
+  --steps 1000 \
+  --output-dir outputs/nonlinear_teacher_forced_moment_1000
+
+uv run python scripts/sweep_nonlinear_learned.py \
+  --configs experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+  --models structured_moment_rollout_h2,structured_moment_rollout_h4,structured_moment_rollout_h8 \
+  --steps 250 \
+  --output-dir outputs/nonlinear_rollout_distillation_250
+
+uv run python scripts/sweep_nonlinear_learned.py \
+  --configs experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+  --models structured_moment_rollout_h4 \
+  --steps 1000 \
+  --output-dir outputs/nonlinear_rollout_distillation_h4_1000
+
+make plot-nonlinear-sweep \
+  NONLINEAR_SWEEP_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv,outputs/nonlinear_teacher_forced_moment_1000/metrics.csv,outputs/nonlinear_rollout_distillation_250/metrics.csv \
+  NONLINEAR_SWEEP_BASELINE_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv \
+  NONLINEAR_SWEEP_WEIGHTS=self-fed,teacher,rollout \
+  NONLINEAR_SWEEP_PATTERNS=weak_sinusoidal,intermittent_sinusoidal \
+  NONLINEAR_SWEEP_PLOT_DIR=outputs/nonlinear_rollout_distillation_250/plots
+
+make plot-nonlinear-sweep \
+  NONLINEAR_SWEEP_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv,outputs/nonlinear_teacher_forced_moment_1000/metrics.csv,outputs/nonlinear_rollout_distillation_250/metrics.csv,outputs/nonlinear_rollout_distillation_h4_1000/metrics.csv \
+  NONLINEAR_SWEEP_BASELINE_METRICS=outputs/nonlinear_moment_distillation_1000/metrics.csv \
+  NONLINEAR_SWEEP_WEIGHTS=self-fed,teacher,rollout250,rollout1000 \
+  NONLINEAR_SWEEP_PATTERNS=weak_sinusoidal,intermittent_sinusoidal \
+  NONLINEAR_SWEEP_PLOT_DIR=outputs/nonlinear_rollout_distillation_h4_1000/plots
 
 make plot-nonlinear \
   RUN_DIR=outputs/nonlinear_calibration_weight_sweep_250/w3/nonlinear_weak_sine_observation_structured_elbo_ref_calibrated
@@ -355,12 +461,12 @@ uv run python scripts/diagnose_nonlinear_mixture_projection.py \
 
 ## Review Questions For The Research Director
 
-1. Do you agree that the next branch should be a less-structured Gaussian update
-   head rather than Mamba or mixtures?
-2. Should moment distillation remain the first diagnostic objective for new
-   nonlinear heads?
-3. Is the current nonlinear claim framed correctly as: "the EKF-residualized
-   strict Gaussian filter is insufficient for weak/intermittent sine
-   observations," rather than "single Gaussian filtering is insufficient"?
-4. Are there additional reference diagnostics you want before changing the
-   update architecture?
+1. Should the nonlinear branch default to the simpler direct head, or keep the
+   structured head with rollout distillation?
+2. Is one seed enough for this decision, or do you want a small seed sweep for
+   direct versus horizon-4 rollout distillation?
+3. Is the current nonlinear claim framed correctly as: "the structured
+   EKF-residualized head learns the one-step map and can be stabilized with
+   short-horizon rollout distillation"?
+4. Are there additional rollout-stability diagnostics you want before changing
+   the update architecture?
