@@ -11,6 +11,11 @@ NONLINEAR_LEARNED_DIR ?= outputs/nonlinear_learned_suite
 NONLINEAR_LEARNED_CONFIGS ?= $(NONLINEAR_REFERENCE_CONFIGS)
 NONLINEAR_LEARNED_MODELS ?= direct_elbo,structured_elbo
 NONLINEAR_LEARNED_STEPS ?= 250
+NONLINEAR_SWEEP_METRICS ?= outputs/nonlinear_calibration_weight_sweep_250/w1/metrics.csv,outputs/nonlinear_calibration_weight_sweep_250/w3/metrics.csv,outputs/nonlinear_calibration_weight_sweep_250/w10/metrics.csv
+NONLINEAR_SWEEP_BASELINE_METRICS ?= outputs/nonlinear_calibration_cached_250/metrics.csv
+NONLINEAR_SWEEP_WEIGHTS ?= 1,3,10
+NONLINEAR_SWEEP_PATTERNS ?= weak_sinusoidal,intermittent_sinusoidal
+NONLINEAR_SWEEP_PLOT_DIR ?= outputs/nonlinear_calibration_weight_sweep_250
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
@@ -56,7 +61,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo plot-nonlinear compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo plot-nonlinear plot-nonlinear-sweep compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
 
 help:
 	@printf "Targets:\n"
@@ -72,6 +77,7 @@ help:
 	@printf "  plot-linear        Plot linear-Gaussian results\n"
 	@printf "  plot-linear-elbo   Plot ELBO linear-Gaussian results\n"
 	@printf "  plot-nonlinear     Plot nonlinear run diagnostics\n"
+	@printf "  plot-nonlinear-sweep Plot nonlinear sweep comparison metrics\n"
 	@printf "  compare-linear     Compare supervised and ELBO linear-Gaussian runs\n"
 	@printf "  sweep-linear       Train and aggregate linear-Gaussian seed sweep\n"
 	@printf "  sweep-elbo-ablation Run ELBO MC-sample/training-budget ablation\n"
@@ -132,6 +138,9 @@ plot-linear-elbo:
 
 plot-nonlinear:
 	$(UV) run python scripts/plot_nonlinear.py --run-dir $(RUN_DIR)
+
+plot-nonlinear-sweep:
+	$(UV) run python scripts/plot_nonlinear_sweep.py --metrics $(NONLINEAR_SWEEP_METRICS) --baseline-metrics $(NONLINEAR_SWEEP_BASELINE_METRICS) --weights $(NONLINEAR_SWEEP_WEIGHTS) --patterns $(NONLINEAR_SWEEP_PATTERNS) --output-dir $(NONLINEAR_SWEEP_PLOT_DIR)
 
 compare-linear:
 	$(UV) run python scripts/compare_linear_gaussian.py --supervised-run-dir $(RUN_DIR) --elbo-run-dir $(RUN_DIR_ELBO) --output $(LINEAR_COMPARISON)
