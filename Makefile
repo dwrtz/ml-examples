@@ -4,6 +4,7 @@ TRAIN_LINEAR_CONFIG ?= experiments/linear_gaussian/01_supervised_edge_mlp.yaml
 TRAIN_LINEAR_ELBO_CONFIG ?= experiments/linear_gaussian/02_elbo_edge_mlp.yaml
 EVALUATE_LINEAR_CONFIG ?= experiments/linear_gaussian/00_oracle_check.yaml
 NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
+TRAIN_NONLINEAR_CONFIG ?= experiments/nonlinear/08_direct_elbo_sine_mlp.yaml
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
@@ -180,7 +181,7 @@ aggregate-random-qr-generalization:
 	$(UV) run python scripts/aggregate_random_qr_generalization.py --output-dir $(RANDOM_QR_CANONICAL_DIR)
 
 train-nonlinear:
-	$(UV) run python scripts/train_nonlinear.py --config $(NONLINEAR_CONFIG)
+	$(UV) run python scripts/train_nonlinear.py --config $(TRAIN_NONLINEAR_CONFIG)
 
 evaluate-nonlinear:
 	$(UV) run python scripts/evaluate_nonlinear.py --config $(NONLINEAR_CONFIG)

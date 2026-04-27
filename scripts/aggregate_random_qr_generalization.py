@@ -23,7 +23,7 @@ METRICS = (
 MODEL_ORDER = {
     "frozen marginal backward MLP": 0,
     "regime-local self-fed supervised": 1,
-    "regime-local calibrated MC ELBO": 2,
+    "oracle regime-variance-calibrated MC ELBO": 2,
 }
 
 EVAL_ORDER = {
@@ -58,7 +58,10 @@ def main() -> None:
     rows = [
         *_load_rows(Path(args.frozen_summary), model="frozen marginal backward MLP"),
         *_load_rows(Path(args.self_fed_summary), model="regime-local self-fed supervised"),
-        *_load_rows(Path(args.elbo_summary), model="regime-local calibrated MC ELBO"),
+        *_load_rows(
+            Path(args.elbo_summary),
+            model="oracle regime-variance-calibrated MC ELBO",
+        ),
     ]
     rows = _dedupe_rows(rows)
     rows.sort(key=_sort_key)

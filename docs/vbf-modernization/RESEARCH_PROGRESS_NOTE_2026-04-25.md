@@ -545,8 +545,9 @@ Interpretation:
 Next useful step: run the calibrated ELBO row on the full weak-observability
 suite, including sinusoidal reference and random-normal regimes, and compare it
 against self-fed calibrated supervision. If the tradeoff remains favorable,
-make calibrated ELBO the default unsupervised baseline for weak-observability
-experiments.
+report calibrated ELBO as an oracle-variance calibration diagnostic for
+weak-observability experiments, while keeping vanilla MC ELBO as the true
+unsupervised baseline.
 
 ## 15. Full weak-observability calibrated ELBO comparison
 
@@ -747,7 +748,7 @@ Models:
 
 - randomized frozen marginal backward MLP
 - randomized calibrated self-fed supervised MLP
-- randomized calibrated MC ELBO
+- oracle-calibrated randomized MC ELBO
 
 Selected rows:
 
@@ -857,8 +858,8 @@ Interpretation:
 Recommended next confirmation: run randomized self-fed and calibrated ELBO with
 regime-local weight `1` at five seeds and 3000 steps. If the 1000-step pattern
 holds, use regime-local self-fed as the default supervised Q/R generalization
-baseline and regime-local calibrated ELBO as the strongest unsupervised Q/R
-baseline.
+baseline and oracle regime-variance-calibrated ELBO as the strongest Q/R
+calibration diagnostic.
 
 ## 21. Regime-local randomized-Q/R 3000-step confirmation
 
@@ -901,14 +902,14 @@ Interpretation:
   `Q=0.03, R=0.3` improves from variance ratio `0.80` and coverage `0.82` to
   variance ratio `0.97` and coverage `0.85`, with better filter KL, edge KL,
   state NLL, and predictive NLL.
-- ELBO still trails regime-local self-fed, but it is now a credible
-  unsupervised Q/R-conditioned baseline rather than a calibration failure.
+- ELBO still trails regime-local self-fed, but the oracle-calibrated diagnostic
+  row is no longer a Q/R-conditioned calibration failure.
 
 Recommended default randomized-Q/R table rows:
 
 1. frozen marginal backward MLP
 2. regime-local self-fed supervised MLP
-3. regime-local calibrated MC ELBO
+3. oracle regime-variance-calibrated MC ELBO
 
 At this point, the scalar linear-Gaussian benchmark has enough evidence for a
 coherent report: exact/frozen controls, weak-observability stress tests,
@@ -931,7 +932,7 @@ The canonical randomized-Q/R report combines:
   `outputs/linear_gaussian_random_qr_generalization_full/frozen/`;
 - regime-local self-fed rows from
   `outputs/linear_gaussian_random_qr_calibration_3000_regime_w1/self_fed/`;
-- regime-local calibrated ELBO rows from
+- oracle regime-variance-calibrated ELBO rows from
   `outputs/linear_gaussian_random_qr_calibration_3000_regime_w1/elbo/`.
 
 The default Make target is:
@@ -943,7 +944,7 @@ make aggregate-random-qr-generalization
 The generated canonical table has 15 rows: five Q/R evaluation regimes by
 three model/control rows. This is the report-ready randomized-Q/R table:
 frozen marginal backward MLP, regime-local self-fed supervised MLP, and
-regime-local calibrated MC ELBO.
+oracle regime-variance-calibrated MC ELBO.
 
 ## 23. Top-level scalar linear-Gaussian final report
 
@@ -971,10 +972,11 @@ The report stitches together:
   `outputs/linear_gaussian_qr_generalization_pilot/`.
 
 It summarizes the current scalar benchmark conclusion: use frozen marginal as
-the control, calibrated self-fed as the strongest learned baseline, and
-calibrated MC ELBO as the strongest unsupervised baseline. Calibration should
-match the stressor: low-observation time-local calibration for weak
-observability and regime-local calibration for randomized Q/R.
+the control, self-fed supervised as the strongest learned baseline, vanilla MC
+ELBO as the true unsupervised baseline, and oracle-calibrated MC ELBO rows as
+calibration diagnostics. Calibration should match the stressor:
+low-observation time-local calibration for weak observability and regime-local
+calibration for randomized Q/R.
 
 ## 24. Nonlinear observation foundation
 

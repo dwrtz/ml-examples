@@ -25,18 +25,20 @@ Recommended default rows:
 
 | Suite | Recommended rows |
 |---|---|
-| Weak observability | exact Kalman; frozen marginal; calibrated self-fed; vanilla MC ELBO; calibrated MC ELBO |
-| Randomized Q/R | frozen marginal; regime-local self-fed; regime-local calibrated MC ELBO |
-| Fixed Q/R transfer | frozen marginal; calibrated self-fed; calibrated MC ELBO as supporting diagnostic evidence |
+| Weak observability | exact Kalman; frozen marginal; self-fed + oracle variance calibration; vanilla MC ELBO; oracle-variance-calibrated MC ELBO |
+| Randomized Q/R | frozen marginal; regime-local self-fed; oracle regime-variance-calibrated MC ELBO |
+| Fixed Q/R transfer | frozen marginal; self-fed + oracle variance calibration; oracle-calibrated MC ELBO as supporting diagnostic evidence |
 
 Current conclusions:
 
 - Frozen marginal is the key control. It preserves exact Kalman filtering and
   isolates learned backward/edge conditional quality.
 - Self-fed supervised filtering is the strongest learned baseline.
-- MC ELBO needs calibration. Low-observation time-local calibration fixes weak
-  observability failures; regime-local calibration fixes randomized-Q/R
-  variance-ratio failures.
+- Vanilla MC ELBO is the true unsupervised baseline and needs calibration.
+  Low-observation time-local oracle-variance calibration fixes weak
+  observability failures; regime-local oracle-variance calibration fixes
+  randomized-Q/R variance-ratio failures. Treat those calibrated ELBO rows as
+  diagnostics, not pure unsupervised baselines.
 - Direct non-residualized ELBO remains much weaker in this scalar benchmark, so
   reports should not blur residualized analytic-update models with filters
   learned from scratch.

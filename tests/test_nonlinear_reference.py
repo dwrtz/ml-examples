@@ -7,6 +7,7 @@ from vbf.nonlinear import (
     make_nonlinear_batch,
     nonlinear_grid_filter,
     nonlinear_observation_mean,
+    nonlinear_predictive_moments_from_filter,
 )
 
 
@@ -66,3 +67,41 @@ def test_zero_x_reference_variance_grows_from_transition_noise() -> None:
 
     mean_var_t = jnp.mean(reference.filter_var, axis=0)
     assert mean_var_t[-1] > mean_var_t[0]
+
+
+def test_nonlinear_grid_filter_stays_finite_with_sharp_likelihood() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=10, observation="x_sine")
+    params = LinearGaussianParams(q=0.03, r=0.001, m0=1.0, p0=10.0)
+    batch = make_nonlinear_batch(config, params, seed=126)
+
+    reference = nonlinear_grid_filter(
+        batch,
+        params,
+        data_config=config,
+        grid_config=GridReferenceConfig(grid_min=-18.0, grid_max=18.0, num_grid=901),
+    )
+
+    assert jnp.all(jnp.isfinite(reference.filter_mean))
+    assert jnp.all(jnp.isfinite(reference.filter_var))
+    assert jnp.all(jnp.isfinite(reference.predictive_mean))
+    assert jnp.all(jnp.isfinite(reference.predictive_var))
+
+
+def test_x_sine_predictive_moments_are_finite_and_positive() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    filter_mean = jnp.zeros((3, 5))
+    filter_var = jnp.ones((3, 5))
+    x = jnp.ones((3, 5))
+
+    mean, var = nonlinear_predictive_moments_from_filter(
+        filter_mean,
+        filter_var,
+        x,
+        params,
+        observation="x_sine",
+    )
+
+    assert mean.shape == (3, 5)
+    assert var.shape == (3, 5)
+    assert jnp.all(jnp.isfinite(mean))
+    assert jnp.all(var > 0.0)

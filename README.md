@@ -109,6 +109,10 @@ edge objective. The ELBO objective remains the main unsupervised benchmark. The
 implementation plan and progress notes in `docs/vbf-modernization/` track the
 research interpretation and next experiments.
 
+A compact scalar benchmark snapshot is committed at
+`docs/results/linear_gaussian_scalar_report.md`; generated full reports remain
+under ignored `outputs/` directories.
+
 ## Historical Experiment
 
 The original TensorFlow and TensorFlow Probability scripts are preserved in

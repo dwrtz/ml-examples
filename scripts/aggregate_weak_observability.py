@@ -33,10 +33,15 @@ MODEL_ORDER = {
     "zero-init no training": 1,
     "frozen marginal backward MLP": 2,
     "self-fed supervised": 3,
-    "self-fed supervised var 0.1": 4,
+    "self-fed supervised + oracle variance calibration": 4,
     "MC ELBO structured": 5,
-    "calibrated MC ELBO": 6,
+    "oracle-variance-calibrated MC ELBO": 6,
     "direct closed-form ELBO": 7,
+}
+
+MODEL_RENAMES = {
+    "self-fed supervised var 0.1": "self-fed supervised + oracle variance calibration",
+    "calibrated MC ELBO": "oracle-variance-calibrated MC ELBO",
 }
 
 
@@ -96,7 +101,7 @@ def _load_calibrated_elbo_rows(path: Path) -> list[dict[str, Any]]:
     rows = []
     for row in json.loads(path.read_text(encoding="utf-8")):
         normalized = dict(row)
-        normalized["model"] = "calibrated MC ELBO"
+        normalized["model"] = "oracle-variance-calibrated MC ELBO"
         normalized["objective"] = "elbo_edge_mlp_low_observation_var_1"
         normalized.pop("variant", None)
         rows.append(normalized)
@@ -106,6 +111,7 @@ def _load_calibrated_elbo_rows(path: Path) -> list[dict[str, Any]]:
 def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: dict[tuple[str, str, str, int], dict[str, Any]] = {}
     for row in rows:
+        row["model"] = MODEL_RENAMES.get(str(row["model"]), row["model"])
         key = (
             str(row["pattern"]),
             str(row["model"]),
@@ -163,9 +169,9 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
     compact_models = {
         "exact Kalman",
         "frozen marginal backward MLP",
-        "self-fed supervised var 0.1",
+        "self-fed supervised + oracle variance calibration",
         "MC ELBO structured",
-        "calibrated MC ELBO",
+        "oracle-variance-calibrated MC ELBO",
     }
     for row in rows:
         if row["model"] not in compact_models:
