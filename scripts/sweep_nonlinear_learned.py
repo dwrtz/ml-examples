@@ -42,6 +42,7 @@ class ModelSpec:
     objective: str
     reference_variance_ratio_weight: float
     reference_time_variance_ratio_weight: float = 0.0
+    reference_log_variance_weight: float = 0.0
     reference_low_observation_variance_ratio_weight: float = 0.0
 
 
@@ -53,6 +54,7 @@ def main() -> None:
     parser.add_argument("--num-elbo-samples", type=int, default=16)
     parser.add_argument("--reference-variance-ratio-weight", type=float, default=1.0)
     parser.add_argument("--reference-time-variance-ratio-weight", type=float, default=1.0)
+    parser.add_argument("--reference-log-variance-weight", type=float, default=1.0)
     parser.add_argument("--reference-low-observation-variance-ratio-weight", type=float, default=1.0)
     parser.add_argument("--output-dir", default="outputs/nonlinear_learned_suite")
     parser.add_argument("--skip-run", action="store_true")
@@ -65,6 +67,7 @@ def main() -> None:
         args.models,
         reference_variance_ratio_weight=args.reference_variance_ratio_weight,
         reference_time_variance_ratio_weight=args.reference_time_variance_ratio_weight,
+        reference_log_variance_weight=args.reference_log_variance_weight,
         reference_low_observation_variance_ratio_weight=(
             args.reference_low_observation_variance_ratio_weight
         ),
@@ -113,6 +116,7 @@ def _selected_model_specs(
     *,
     reference_variance_ratio_weight: float,
     reference_time_variance_ratio_weight: float,
+    reference_log_variance_weight: float,
     reference_low_observation_variance_ratio_weight: float,
 ) -> list[ModelSpec]:
     all_specs = {
@@ -146,6 +150,13 @@ def _selected_model_specs(
             objective="structured_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
             reference_time_variance_ratio_weight=reference_time_variance_ratio_weight,
+        ),
+        "structured_elbo_ref_logvar_calibrated": ModelSpec(
+            key="structured_elbo_ref_logvar_calibrated",
+            label="EKF-residualized nonlinear MC ELBO + reference log-variance calibration",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            reference_log_variance_weight=reference_log_variance_weight,
         ),
         "structured_elbo_ref_low_obs_calibrated": ModelSpec(
             key="structured_elbo_ref_low_obs_calibrated",
@@ -197,6 +208,7 @@ def _make_train_config(
         "num_elbo_samples": num_elbo_samples,
         "reference_variance_ratio_weight": spec.reference_variance_ratio_weight,
         "reference_time_variance_ratio_weight": spec.reference_time_variance_ratio_weight,
+        "reference_log_variance_weight": spec.reference_log_variance_weight,
         "reference_low_observation_variance_ratio_weight": (
             spec.reference_low_observation_variance_ratio_weight
         ),
@@ -238,6 +250,7 @@ def _load_row(
         "num_elbo_samples": metrics["num_elbo_samples"],
         "reference_variance_ratio_weight": metrics["reference_variance_ratio_weight"],
         "reference_time_variance_ratio_weight": metrics["reference_time_variance_ratio_weight"],
+        "reference_log_variance_weight": metrics["reference_log_variance_weight"],
         "reference_low_observation_variance_ratio_weight": metrics[
             "reference_low_observation_variance_ratio_weight"
         ],
@@ -257,6 +270,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "num_elbo_samples",
         "reference_variance_ratio_weight",
         "reference_time_variance_ratio_weight",
+        "reference_log_variance_weight",
         "reference_low_observation_variance_ratio_weight",
         *METRICS,
     ]
@@ -283,9 +297,9 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
     lines.extend(
         [
             "",
-            "Rows with a nonzero `reference_variance_ratio_weight` use grid-reference",
-            "filtering variances as calibration targets and should be reported as",
-            "reference-calibrated diagnostics, not fully unsupervised ELBO baselines.",
+            "Rows with nonzero reference calibration weights use grid-reference filtering",
+            "variances as calibration targets and should be reported as reference-calibrated",
+            "diagnostics, not fully unsupervised ELBO baselines.",
             "",
         ]
     )

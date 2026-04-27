@@ -26,6 +26,7 @@ CALIBRATION_LABELS = {
     "EKF-residualized nonlinear MC ELBO": "baseline",
     "EKF-residualized nonlinear MC ELBO + reference variance calibration": "global",
     "EKF-residualized nonlinear MC ELBO + reference time variance calibration": "time",
+    "EKF-residualized nonlinear MC ELBO + reference log-variance calibration": "log-var",
     "EKF-residualized nonlinear MC ELBO + reference low-observation calibration": "low-obs",
     "direct nonlinear MC ELBO": "direct",
     "direct nonlinear MC ELBO + reference variance calibration": "direct-global",
@@ -189,7 +190,7 @@ def _series(rows: Iterable[dict[str, str]]) -> list[tuple[str, str]]:
 
 
 def _series_rank(calibration: str) -> int:
-    order = {"baseline": 0, "global": 1, "time": 2, "low-obs": 3}
+    order = {"baseline": 0, "global": 1, "time": 2, "log-var": 3, "low-obs": 4}
     return order.get(calibration, 100)
 
 

@@ -61,6 +61,9 @@ def main() -> None:
     reference_time_variance_ratio_weight = float(
         training_config.get("reference_time_variance_ratio_weight", 0.0)
     )
+    reference_log_variance_weight = float(
+        training_config.get("reference_log_variance_weight", 0.0)
+    )
     reference_low_observation_variance_ratio_weight = float(
         training_config.get("reference_low_observation_variance_ratio_weight", 0.0)
     )
@@ -72,6 +75,7 @@ def main() -> None:
     if (
         reference_variance_ratio_weight != 0.0
         or reference_time_variance_ratio_weight != 0.0
+        or reference_log_variance_weight != 0.0
         or reference_low_observation_variance_ratio_weight != 0.0
     ):
         train_cached = load_or_compute_nonlinear_reference(
@@ -140,6 +144,12 @@ def main() -> None:
             learned_t = jnp.mean(outputs.filter_var, axis=0)
             loss = loss + reference_time_variance_ratio_weight * jnp.mean(
                 jnp.log(learned_t / reference_filter_var_t) ** 2
+            )
+        if reference_log_variance_weight != 0.0:
+            if train_reference is None:
+                raise ValueError("train_reference is required for log-variance calibration")
+            loss = loss + reference_log_variance_weight * jnp.mean(
+                (jnp.log(outputs.filter_var) - jnp.log(train_reference.filter_var)) ** 2
             )
         if reference_low_observation_variance_ratio_weight != 0.0:
             if reference_filter_var_t is None or low_observation_weights_t is None:
@@ -217,6 +227,7 @@ def main() -> None:
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
         "reference_time_variance_ratio_weight": reference_time_variance_ratio_weight,
+        "reference_log_variance_weight": reference_log_variance_weight,
         "reference_low_observation_variance_ratio_weight": (
             reference_low_observation_variance_ratio_weight
         ),
