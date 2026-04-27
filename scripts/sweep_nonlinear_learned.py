@@ -133,6 +133,15 @@ def _selected_model_specs(
             objective="direct_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
         ),
+        "direct_moment_distilled": ModelSpec(
+            key="direct_moment_distilled",
+            label="direct nonlinear MLP + reference moment distillation",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            reference_mean_weight=1.0,
+            reference_log_variance_weight=1.0,
+        ),
         "structured_elbo": ModelSpec(
             key="structured_elbo",
             label="EKF-residualized nonlinear MC ELBO",
