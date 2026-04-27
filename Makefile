@@ -5,6 +5,8 @@ TRAIN_LINEAR_ELBO_CONFIG ?= experiments/linear_gaussian/02_elbo_edge_mlp.yaml
 EVALUATE_LINEAR_CONFIG ?= experiments/linear_gaussian/00_oracle_check.yaml
 NONLINEAR_CONFIG ?= experiments/nonlinear/01_sine_observation.yaml
 TRAIN_NONLINEAR_CONFIG ?= experiments/nonlinear/08_direct_elbo_sine_mlp.yaml
+NONLINEAR_REFERENCE_DIR ?= outputs/nonlinear_reference_suite
+NONLINEAR_REFERENCE_CONFIGS ?= experiments/nonlinear/01_sine_observation.yaml,experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml,experiments/nonlinear/05_zero_sine_observation.yaml,experiments/nonlinear/06_random_normal_sine_observation.yaml
 RUN_DIR ?= outputs/linear_gaussian_supervised_edge_mlp
 RUN_DIR_ELBO ?= outputs/linear_gaussian_elbo_edge_mlp
 LINEAR_COMPARISON ?= outputs/linear_gaussian_comparison.md
@@ -50,7 +52,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference clean
 
 help:
 	@printf "Targets:\n"
@@ -87,6 +89,7 @@ help:
 	@printf "  aggregate-random-qr-generalization Merge randomized-Q/R canonical summaries\n"
 	@printf "  train-nonlinear    Run nonlinear training\n"
 	@printf "  evaluate-nonlinear Run nonlinear evaluation\n"
+	@printf "  sweep-nonlinear-reference Run nonlinear grid reference suite\n"
 	@printf "  clean              Remove local caches\n"
 
 setup:
@@ -185,6 +188,9 @@ train-nonlinear:
 
 evaluate-nonlinear:
 	$(UV) run python scripts/evaluate_nonlinear.py --config $(NONLINEAR_CONFIG)
+
+sweep-nonlinear-reference:
+	$(UV) run python scripts/sweep_nonlinear_reference.py --configs $(NONLINEAR_REFERENCE_CONFIGS) --output-dir $(NONLINEAR_REFERENCE_DIR)
 
 clean:
 	rm -rf .pytest_cache .ruff_cache
