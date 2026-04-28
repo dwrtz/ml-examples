@@ -507,6 +507,23 @@ mask_y_span_length: 4
 
 Check that the best fully unsupervised objective generalizes beyond weak/intermittent.
 
+### Status
+
+Completed on 2026-04-28 using:
+
+```text
+structured_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4
+```
+
+Full artifacts:
+
+```text
+outputs/nonlinear_unsupervised_objective_robustness_full_1000/metrics.csv
+outputs/nonlinear_unsupervised_objective_robustness_full_1000/summary.md
+outputs/nonlinear_unsupervised_objective_robustness_full_1000/plots/sweep_comparison.png
+docs/results/nonlinear_unsupervised_elbo_t11_status_2026-04-28.md
+```
+
 ### Command
 
 Run only after T9/T10 produce a promising row:
@@ -524,8 +541,13 @@ Replace `BEST_UNSUPERVISED_OBJECTIVE` with the selected model key.
 
 ### Acceptance criteria
 
-- The best unsupervised objective improves weak/intermittent without breaking zero/random-normal cases.
-- The report clearly separates fully unsupervised rows from reference-distilled rows.
+- Completed: the promoted objective improves weak/intermittent state NLL, coverage, and variance
+  ratio relative to structured ELBO.
+- Completed: zero and random-normal cases do not break; both improve substantially relative to
+  structured ELBO.
+- Caveat: the promoted objective slightly regresses on the clean sinusoidal condition and remains
+  far from reference-distilled diagnostics.
+- Completed: the report separates fully unsupervised rows from reference-distilled rows.
 
 ## T12 — Final aggregation report
 

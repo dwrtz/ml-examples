@@ -399,6 +399,24 @@ experiments/nonlinear/06_random_normal_sine_observation.yaml
 
 Defer the long-sequence config unless the final claim needs long-horizon stability.
 
+Status as of 2026-04-28: this robustness pass has been run for the selected fully unsupervised row
+`structured_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4` against `structured_elbo`,
+`direct_elbo`, `direct_moment_distilled`, and `structured_moment_rollout_h4` on seeds
+`321,322,323` with 1000 training steps. The generated artifacts are:
+
+```text
+outputs/nonlinear_unsupervised_objective_robustness_full_1000/summary.md
+outputs/nonlinear_unsupervised_objective_robustness_full_1000/plots/sweep_comparison.png
+docs/results/nonlinear_unsupervised_elbo_t11_status_2026-04-28.md
+```
+
+The promoted unsupervised objective improves state NLL, coverage, and variance ratio on weak,
+intermittent, zero, and random-normal observation stressors, but it is not Pareto-dominant on the
+clean sinusoidal condition. This is a partial success for objective repair: the combined
+trajectory/predictive/masked-y objective materially reduces the degraded-observation failure, but
+it remains far from the reference-distilled diagnostics and still falls short of the original
+decision gate requiring variance ratio above `0.50`.
+
 ## 9. Metrics and diagnostics
 
 Primary metrics:
@@ -448,6 +466,10 @@ Recommended wording if the branch fails:
 - variance ratio moves above 0.50 in at least one hard nonlinear case;
 - state NLL improves materially without pure variance inflation;
 - the best fully unsupervised row closes a visible fraction of the gap to `direct_moment_distilled`.
+
+Current gate assessment after T11: continue only as a targeted objective/divergence investigation,
+not as a claim that the current combined ELBO is solved. The row closes a visible fraction of the
+gap in weak/intermittent and severe stressors, but calibration remains weak in absolute terms.
 
 ### Stop this branch and change objective family if
 
