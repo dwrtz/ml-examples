@@ -7,6 +7,7 @@ from typing import NamedTuple
 
 import jax
 import jax.scipy as jsp
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -367,6 +368,33 @@ def nonlinear_predictive_moments_from_filter(
     mean_sin_sq = 0.5 * (1.0 - mean_cos_2z)
     var_sin = jnp.maximum(mean_sin_sq - mean_sin**2, 0.0)
     return x * mean_sin, x**2 * var_sin + params.r
+
+
+def nonlinear_preassimilation_log_prob_y(
+    prev_filter_mean: jax.Array,
+    prev_filter_var: jax.Array,
+    x: jax.Array,
+    y: jax.Array,
+    params: LinearGaussianParams,
+    *,
+    observation: str = "x_sine",
+    num_points: int = 32,
+) -> jax.Array:
+    """Return `log p(y_t | q^F_{t-1}, x_t)` using Gauss-Hermite quadrature."""
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported nonlinear predictive likelihood: {observation}")
+    if num_points <= 0:
+        raise ValueError("num_points must be positive")
+
+    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
+    nodes = jnp.asarray(nodes_np, dtype=prev_filter_mean.dtype)
+    log_weights = jnp.log(jnp.asarray(weights_np, dtype=prev_filter_mean.dtype))
+    pred_state_var = prev_filter_var + params.q
+    z = prev_filter_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
+    obs_mean = x[..., None] * jnp.sin(z)
+    log_likelihood = _normal_log_prob(y[..., None], obs_mean, params.r)
+    return jsp.special.logsumexp(log_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(jnp.pi)
 
 
 def run_nonlinear_structured_mlp_filter(

@@ -20,6 +20,7 @@ METRICS = (
     "state_nll",
     "reference_state_nll",
     "predictive_nll",
+    "predictive_y_nll",
     "reference_predictive_nll",
     "coverage_90",
     "reference_coverage_90",
@@ -42,6 +43,9 @@ class ModelSpec:
     objective: str
     reference_variance_ratio_weight: float
     elbo_weight: float = 1.0
+    predictive_y_weight: float = 0.0
+    predictive_y_num_samples: int = 32
+    predictive_y_estimator: str = "quadrature"
     reference_mean_weight: float = 0.0
     reference_rollout_weight: float = 0.0
     reference_rollout_horizon: int = 1
@@ -161,6 +165,13 @@ def _selected_model_specs(
             objective="direct_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
         ),
+        "direct_elbo_predictive_y": ModelSpec(
+            key="direct_elbo_predictive_y",
+            label="direct nonlinear MC ELBO + predictive-y auxiliary",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            predictive_y_weight=1.0,
+        ),
         "direct_moment_distilled": ModelSpec(
             key="direct_moment_distilled",
             label="direct nonlinear MLP + reference moment distillation",
@@ -216,6 +227,13 @@ def _selected_model_specs(
             label="EKF-residualized nonlinear MC ELBO",
             objective="structured_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
+        ),
+        "structured_elbo_predictive_y": ModelSpec(
+            key="structured_elbo_predictive_y",
+            label="EKF-residualized nonlinear MC ELBO + predictive-y auxiliary",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            predictive_y_weight=1.0,
         ),
         "structured_elbo_resampled": ModelSpec(
             key="structured_elbo_resampled",
@@ -349,6 +367,9 @@ def _make_train_config(
         "steps": steps,
         "num_elbo_samples": num_elbo_samples,
         "elbo_weight": spec.elbo_weight,
+        "predictive_y_weight": spec.predictive_y_weight,
+        "predictive_y_num_samples": spec.predictive_y_num_samples,
+        "predictive_y_estimator": spec.predictive_y_estimator,
         "reference_mean_weight": spec.reference_mean_weight,
         "reference_rollout_weight": spec.reference_rollout_weight,
         "reference_rollout_horizon": spec.reference_rollout_horizon,
@@ -399,6 +420,10 @@ def _load_row(
         "steps": metrics["training_steps"],
         "num_elbo_samples": metrics["num_elbo_samples"],
         "elbo_weight": metrics["elbo_weight"],
+        "predictive_y_weight": metrics["predictive_y_weight"],
+        "predictive_y_num_samples": metrics["predictive_y_num_samples"],
+        "predictive_y_estimator": metrics["predictive_y_estimator"],
+        "training_signal": _training_signal(metrics),
         "reference_mean_weight": metrics["reference_mean_weight"],
         "reference_rollout_weight": metrics["reference_rollout_weight"],
         "reference_rollout_horizon": metrics["reference_rollout_horizon"],
@@ -415,6 +440,22 @@ def _load_row(
     }
 
 
+def _training_signal(metrics: dict[str, Any]) -> str:
+    if (
+        metrics["reference_variance_ratio_weight"] != 0.0
+        or metrics["reference_time_variance_ratio_weight"] != 0.0
+        or metrics["reference_low_observation_variance_ratio_weight"] != 0.0
+    ):
+        return "oracle_calibrated"
+    if (
+        metrics["reference_mean_weight"] != 0.0
+        or metrics["reference_rollout_weight"] != 0.0
+        or metrics["reference_log_variance_weight"] != 0.0
+    ):
+        return "reference_distilled"
+    return "unsupervised"
+
+
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = [
         "name",
@@ -427,6 +468,10 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "steps",
         "num_elbo_samples",
         "elbo_weight",
+        "predictive_y_weight",
+        "predictive_y_num_samples",
+        "predictive_y_estimator",
+        "training_signal",
         "reference_mean_weight",
         "reference_rollout_weight",
         "reference_rollout_horizon",
@@ -449,15 +494,16 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
     lines = [
         "# Nonlinear Learned Filter Suite",
         "",
-        "| x pattern | Model | Steps | state NLL | ref state NLL | cov 90 | ref cov 90 | var ratio | pred NLL | ref pred NLL |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| x pattern | Model | signal | Steps | state NLL | ref state NLL | cov 90 | ref cov 90 | var ratio | pred-y NLL | pred NLL | ref pred NLL |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| {x_pattern} | {model} | {steps} | {state_nll:.6f} | "
+            "| {x_pattern} | {model} | {training_signal} | {steps} | {state_nll:.6f} | "
             "{reference_state_nll:.6f} | {coverage_90:.6f} | "
             "{reference_coverage_90:.6f} | {variance_ratio:.6f} | "
-            "{predictive_nll:.6f} | {reference_predictive_nll:.6f} |".format(**row)
+            "{predictive_y_nll:.6f} | {predictive_nll:.6f} | "
+            "{reference_predictive_nll:.6f} |".format(**row)
         )
     aggregate_rows = _aggregate_rows(rows)
     if len(aggregate_rows) != len(rows):
@@ -480,9 +526,9 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
     lines.extend(
         [
             "",
-            "Rows with nonzero reference calibration weights use grid-reference filtering",
-            "variances as calibration targets and should be reported as reference-calibrated",
-            "diagnostics, not fully unsupervised ELBO baselines.",
+            "The signal column classifies each training row as unsupervised,",
+            "reference-distilled, or oracle-calibrated according to the objective",
+            "weights used during training.",
             "",
         ]
     )

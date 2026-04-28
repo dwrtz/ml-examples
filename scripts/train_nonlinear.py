@@ -27,12 +27,14 @@ from vbf.nonlinear import (
     NonlinearDataConfig,
     make_nonlinear_batch,
     nonlinear_observation_mean,
+    nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
     nonlinear_structured_mlp_step,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
 )
 from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
+from vbf.predictive import previous_filter_beliefs
 from vbf.train import adam_update, init_adam
 
 
@@ -60,6 +62,9 @@ def main() -> None:
     reference_config = GridReferenceConfig(**config.get("reference", {}))
     min_var = float(training_config.get("min_var", 1e-6))
     elbo_weight = float(training_config.get("elbo_weight", 1.0))
+    predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
+    predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
+    predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
     reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
     reference_rollout_weight = float(training_config.get("reference_rollout_weight", 0.0))
     reference_rollout_horizon = int(training_config.get("reference_rollout_horizon", 1))
@@ -93,6 +98,10 @@ def main() -> None:
         raise ValueError("reference_rollout_horizon must be positive")
     if reference_rollout_horizon > data_config.time_steps:
         raise ValueError("reference_rollout_horizon cannot exceed data time_steps")
+    if predictive_y_num_samples <= 0:
+        raise ValueError("predictive_y_num_samples must be positive")
+    if predictive_y_estimator != "quadrature":
+        raise ValueError("Only predictive_y_estimator='quadrature' is supported")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_reference = None
@@ -177,6 +186,22 @@ def main() -> None:
                     num_samples=int(training_config.get("num_elbo_samples", 8)),
                 )
             )
+        if predictive_y_weight != 0.0:
+            prev_mean, prev_var = previous_filter_beliefs(
+                outputs.filter_mean,
+                outputs.filter_var,
+                state_params,
+            )
+            predictive_y_log_prob = nonlinear_preassimilation_log_prob_y(
+                prev_mean,
+                prev_var,
+                batch.x,
+                batch.y,
+                state_params,
+                observation=data_config.observation,
+                num_points=predictive_y_num_samples,
+            )
+            loss = loss - predictive_y_weight * jnp.mean(predictive_y_log_prob)
         if reference_mean_weight != 0.0:
             if train_reference is None:
                 raise ValueError("train_reference is required for reference mean distillation")
@@ -311,6 +336,20 @@ def main() -> None:
         learned_predictive_mean,
         learned_predictive_var,
     )
+    eval_prev_mean, eval_prev_var = previous_filter_beliefs(
+        outputs.filter_mean,
+        outputs.filter_var,
+        state_params,
+    )
+    learned_predictive_y_nll = -nonlinear_preassimilation_log_prob_y(
+        eval_prev_mean,
+        eval_prev_var,
+        eval_batch.x,
+        eval_batch.y,
+        state_params,
+        observation=eval_data_config.observation,
+        num_points=predictive_y_num_samples,
+    )
     reference_predictive_nll = scalar_gaussian_nll(
         eval_batch.y,
         reference.predictive_mean,
@@ -326,6 +365,9 @@ def main() -> None:
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "elbo_weight": elbo_weight,
+        "predictive_y_weight": predictive_y_weight,
+        "predictive_y_num_samples": predictive_y_num_samples,
+        "predictive_y_estimator": predictive_y_estimator,
         "reference_mean_weight": reference_mean_weight,
         "reference_rollout_weight": reference_rollout_weight,
         "reference_rollout_horizon": reference_rollout_horizon,
@@ -351,6 +393,7 @@ def main() -> None:
         "state_nll": float(jnp.mean(learned_state_nll)),
         "reference_state_nll": float(jnp.mean(reference_state_nll)),
         "predictive_nll": float(jnp.mean(learned_predictive_nll)),
+        "predictive_y_nll": float(jnp.mean(learned_predictive_y_nll)),
         "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
         "coverage_90": float(
             gaussian_interval_coverage(

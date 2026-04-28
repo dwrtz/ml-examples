@@ -11,6 +11,7 @@ from vbf.nonlinear import (
     nonlinear_grid_filter_masses,
     nonlinear_grid_filter_shape_diagnostics,
     nonlinear_observation_mean,
+    nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
@@ -150,6 +151,48 @@ def test_x_sine_predictive_moments_are_finite_and_positive() -> None:
     assert var.shape == (3, 5)
     assert jnp.all(jnp.isfinite(mean))
     assert jnp.all(var > 0.0)
+
+
+def test_nonlinear_preassimilation_log_prob_y_is_finite_and_batched() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    prev_mean = jnp.zeros((3, 5))
+    prev_var = jnp.ones((3, 5))
+    x = jnp.ones((3, 5))
+    y = jnp.zeros((3, 5))
+
+    log_prob = nonlinear_preassimilation_log_prob_y(
+        prev_mean,
+        prev_var,
+        x,
+        y,
+        params,
+        observation="x_sine",
+        num_points=16,
+    )
+
+    assert log_prob.shape == (3, 5)
+    assert jnp.all(jnp.isfinite(log_prob))
+
+
+def test_nonlinear_preassimilation_log_prob_y_zero_x_matches_observation_noise() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.3, m0=1.0, p0=2.0)
+    prev_mean = jnp.zeros((2, 4))
+    prev_var = jnp.ones((2, 4))
+    x = jnp.zeros((2, 4))
+    y = jnp.asarray([[0.0, 0.5, -1.0, 1.5], [0.1, -0.2, 0.3, -0.4]])
+
+    log_prob = nonlinear_preassimilation_log_prob_y(
+        prev_mean,
+        prev_var,
+        x,
+        y,
+        params,
+        observation="x_sine",
+        num_points=16,
+    )
+    expected = -0.5 * (jnp.log(2.0 * jnp.pi * params.r) + y**2 / params.r)
+
+    assert jnp.allclose(log_prob, expected)
 
 
 def test_nonlinear_structured_mlp_filter_outputs_positive_variances() -> None:
