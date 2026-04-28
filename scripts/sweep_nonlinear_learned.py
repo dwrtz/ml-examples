@@ -43,6 +43,10 @@ class ModelSpec:
     objective: str
     reference_variance_ratio_weight: float
     elbo_weight: float = 1.0
+    joint_elbo_weight: float = 0.0
+    joint_elbo_horizon: int = 1
+    joint_elbo_num_samples: int = 16
+    joint_elbo_num_windows: int = 8
     predictive_y_weight: float = 0.0
     predictive_y_num_samples: int = 32
     predictive_y_estimator: str = "quadrature"
@@ -245,6 +249,51 @@ def _selected_model_specs(
             reference_variance_ratio_weight=0.0,
             resample_batch=True,
         ),
+        "structured_joint_elbo_h1": ModelSpec(
+            key="structured_joint_elbo_h1",
+            label="EKF-residualized nonlinear windowed ELBO h1",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=1,
+        ),
+        "structured_joint_elbo_h2": ModelSpec(
+            key="structured_joint_elbo_h2",
+            label="EKF-residualized nonlinear windowed ELBO h2",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=2,
+        ),
+        "structured_joint_elbo_h4": ModelSpec(
+            key="structured_joint_elbo_h4",
+            label="EKF-residualized nonlinear windowed ELBO h4",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+        ),
+        "structured_joint_elbo_h8": ModelSpec(
+            key="structured_joint_elbo_h8",
+            label="EKF-residualized nonlinear windowed ELBO h8",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=8,
+        ),
+        "direct_joint_elbo_h4": ModelSpec(
+            key="direct_joint_elbo_h4",
+            label="direct nonlinear windowed ELBO h4",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+        ),
         "structured_elbo_masked_y": ModelSpec(
             key="structured_elbo_masked_y",
             label="EKF-residualized nonlinear MC ELBO + masked-y updates",
@@ -411,6 +460,10 @@ def _make_train_config(
         "num_elbo_samples": num_elbo_samples,
         "elbo_weight": spec.elbo_weight,
         "predictive_y_weight": spec.predictive_y_weight,
+        "joint_elbo_weight": spec.joint_elbo_weight,
+        "joint_elbo_horizon": spec.joint_elbo_horizon,
+        "joint_elbo_num_samples": spec.joint_elbo_num_samples,
+        "joint_elbo_num_windows": spec.joint_elbo_num_windows,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
         "mask_y_probability": spec.mask_y_probability,
@@ -467,6 +520,10 @@ def _load_row(
         "num_elbo_samples": metrics["num_elbo_samples"],
         "elbo_weight": metrics["elbo_weight"],
         "predictive_y_weight": metrics["predictive_y_weight"],
+        "joint_elbo_weight": metrics["joint_elbo_weight"],
+        "joint_elbo_horizon": metrics["joint_elbo_horizon"],
+        "joint_elbo_num_samples": metrics["joint_elbo_num_samples"],
+        "joint_elbo_num_windows": metrics["joint_elbo_num_windows"],
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
         "mask_y_probability": metrics["mask_y_probability"],
@@ -518,6 +575,10 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "num_elbo_samples",
         "elbo_weight",
         "predictive_y_weight",
+        "joint_elbo_weight",
+        "joint_elbo_horizon",
+        "joint_elbo_num_samples",
+        "joint_elbo_num_windows",
         "predictive_y_num_samples",
         "predictive_y_estimator",
         "mask_y_probability",

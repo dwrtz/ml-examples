@@ -64,6 +64,11 @@ def main() -> None:
     reference_config = GridReferenceConfig(**config.get("reference", {}))
     min_var = float(training_config.get("min_var", 1e-6))
     elbo_weight = float(training_config.get("elbo_weight", 1.0))
+    joint_elbo_weight = float(training_config.get("joint_elbo_weight", 0.0))
+    joint_elbo_horizon = int(training_config.get("joint_elbo_horizon", 1))
+    joint_elbo_num_samples = int(training_config.get("joint_elbo_num_samples", 16))
+    joint_elbo_num_windows = int(training_config.get("joint_elbo_num_windows", 8))
+    joint_elbo_window_seed_offset = int(training_config.get("joint_elbo_window_seed_offset", 80_000))
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
@@ -104,6 +109,14 @@ def main() -> None:
         raise ValueError("reference_rollout_horizon must be positive")
     if reference_rollout_horizon > data_config.time_steps:
         raise ValueError("reference_rollout_horizon cannot exceed data time_steps")
+    if joint_elbo_horizon <= 0:
+        raise ValueError("joint_elbo_horizon must be positive")
+    if joint_elbo_horizon > data_config.time_steps:
+        raise ValueError("joint_elbo_horizon cannot exceed data time_steps")
+    if joint_elbo_num_samples <= 0:
+        raise ValueError("joint_elbo_num_samples must be positive")
+    if joint_elbo_num_windows <= 0:
+        raise ValueError("joint_elbo_num_windows must be positive")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
     if predictive_y_estimator != "quadrature":
@@ -215,6 +228,20 @@ def main() -> None:
                     key,
                     observation=data_config.observation,
                     num_samples=int(training_config.get("num_elbo_samples", 8)),
+                )
+            )
+        if joint_elbo_weight != 0.0:
+            joint_key = jax.random.fold_in(key, joint_elbo_window_seed_offset)
+            loss = loss - joint_elbo_weight * jnp.mean(
+                _nonlinear_windowed_joint_elbo(
+                    outputs,
+                    batch,
+                    state_params,
+                    joint_key,
+                    observation=data_config.observation,
+                    horizon=joint_elbo_horizon,
+                    num_samples=joint_elbo_num_samples,
+                    num_windows=joint_elbo_num_windows,
                 )
             )
         if predictive_y_weight != 0.0:
@@ -410,6 +437,11 @@ def main() -> None:
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
         "elbo_weight": elbo_weight,
+        "joint_elbo_weight": joint_elbo_weight,
+        "joint_elbo_horizon": joint_elbo_horizon,
+        "joint_elbo_num_samples": joint_elbo_num_samples,
+        "joint_elbo_num_windows": joint_elbo_num_windows,
+        "joint_elbo_window_seed_offset": joint_elbo_window_seed_offset,
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_y_estimator": predictive_y_estimator,
@@ -775,6 +807,93 @@ def _nonlinear_edge_elbo(
         - _normal_log_prob(z_tm1, backward_mean, outputs.backward_var[None, ...])
     )
     return jnp.mean(elbo, axis=0)
+
+
+def _nonlinear_windowed_joint_elbo(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    horizon: int,
+    num_samples: int,
+    num_windows: int,
+) -> jax.Array:
+    if horizon == 1:
+        return _nonlinear_edge_elbo(
+            outputs,
+            batch,
+            state_params,
+            key,
+            observation=observation,
+            num_samples=num_samples,
+        )
+
+    time_steps = batch.x.shape[1]
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    if horizon > time_steps:
+        raise ValueError("horizon cannot exceed batch time_steps")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+    if num_windows <= 0:
+        raise ValueError("num_windows must be positive")
+
+    possible_windows = time_steps - horizon + 1
+    end_indices = (
+        jnp.arange(horizon - 1, time_steps)
+        if num_windows >= possible_windows
+        else jax.random.randint(
+            key,
+            shape=(num_windows,),
+            minval=horizon - 1,
+            maxval=time_steps,
+        )
+    )
+    sample_key, *backward_keys = jax.random.split(key, horizon + 1)
+    end_mean = jnp.take(outputs.filter_mean, end_indices, axis=1)
+    end_var = jnp.take(outputs.filter_var, end_indices, axis=1)
+    eps_end = jax.random.normal(
+        sample_key,
+        shape=(num_samples,) + end_mean.shape,
+        dtype=outputs.filter_mean.dtype,
+    )
+    z_t = end_mean[None, ...] + jnp.sqrt(end_var)[None, ...] * eps_end
+    log_q = _normal_log_prob(z_t, end_mean[None, ...], end_var[None, ...])
+    log_score = jnp.zeros_like(log_q)
+
+    for offset in range(horizon):
+        t_indices = end_indices - offset
+        x_t = jnp.take(batch.x, t_indices, axis=1)
+        y_t = jnp.take(batch.y, t_indices, axis=1)
+        obs_mean = nonlinear_observation_mean(z_t, x_t[None, ...], observation)
+        log_score = log_score + _normal_log_prob(y_t[None, ...], obs_mean, state_params.r)
+
+        backward_a = jnp.take(outputs.backward_a, t_indices, axis=1)
+        backward_b = jnp.take(outputs.backward_b, t_indices, axis=1)
+        backward_var = jnp.take(outputs.backward_var, t_indices, axis=1)
+        backward_mean = backward_a[None, ...] * z_t + backward_b[None, ...]
+        eps_prev = jax.random.normal(
+            backward_keys[offset],
+            shape=z_t.shape,
+            dtype=outputs.filter_mean.dtype,
+        )
+        z_prev = backward_mean + jnp.sqrt(backward_var)[None, ...] * eps_prev
+        log_score = log_score + _normal_log_prob(z_t, z_prev, state_params.q)
+        log_q = log_q + _normal_log_prob(z_prev, backward_mean, backward_var[None, ...])
+        z_t = z_prev
+
+    first_transition_indices = end_indices - horizon + 1
+    prev_mean, prev_var = _previous_filter_beliefs(
+        outputs.filter_mean,
+        outputs.filter_var,
+        state_params,
+    )
+    initial_mean = jnp.take(prev_mean, first_transition_indices, axis=1)
+    initial_var = jnp.take(prev_var, first_transition_indices, axis=1)
+    log_score = log_score + _normal_log_prob(z_t, initial_mean[None, ...], initial_var[None, ...])
+    return jnp.mean(log_score - log_q, axis=0)
 
 
 def _previous_filter_beliefs(
