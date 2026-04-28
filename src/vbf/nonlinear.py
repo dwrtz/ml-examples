@@ -19,7 +19,12 @@ from vbf.data import (  # noqa: E402
     LinearGaussianParams,
     make_observation_covariates,
 )
-from vbf.models.cells import StructuredMLPOutputs, _mlp_features  # noqa: E402
+from vbf.models.cells import (  # noqa: E402
+    GaussianMixtureMLPOutputs,
+    StructuredMLPOutputs,
+    _mlp_features,
+    mixture_mean_and_var,
+)
 
 
 LOG_2PI = jnp.log(2.0 * jnp.pi)
@@ -477,6 +482,61 @@ def run_nonlinear_structured_mlp_filter(
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
+def run_nonlinear_structured_mixture_mlp_filter(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    observation: str = "x_sine",
+    min_var: float = 1e-6,
+    y_observed: jax.Array | None = None,
+) -> GaussianMixtureMLPOutputs:
+    """Run an EKF-residualized strict Gaussian-mixture nonlinear filter."""
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+    if y_observed is None:
+        y_observed = jnp.ones_like(batch.y, dtype=bool)
+    observed_bt = y_observed.T
+
+    def step(
+        carry: tuple[jax.Array, jax.Array, jax.Array],
+        obs: tuple[jax.Array, jax.Array, jax.Array],
+    ):
+        prev_weights, prev_mean, prev_var = carry
+        x_t, y_t, observed_t = obs
+        update_outputs = nonlinear_structured_mixture_mlp_step(
+            mlp_params,
+            prev_weights,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            num_components=num_components,
+            observation=observation,
+            min_var=min_var,
+        )
+        transition_outputs = mixture_transition_prediction_outputs(
+            prev_weights,
+            prev_mean,
+            prev_var,
+            state_params,
+        )
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
+        return (outputs.filter_weights, outputs.component_mean, outputs.component_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
+    return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
 def run_nonlinear_structured_mlp_teacher_forced(
     mlp_params: dict[str, jax.Array],
     batch: EpisodeBatch,
@@ -544,6 +604,57 @@ def nonlinear_structured_mlp_step(
     )
 
 
+def nonlinear_structured_mixture_mlp_step(
+    mlp_params: dict[str, jax.Array],
+    prev_weights: jax.Array,
+    prev_component_mean: jax.Array,
+    prev_component_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    observation: str = "x_sine",
+    min_var: float = 1e-6,
+) -> GaussianMixtureMLPOutputs:
+    """Compute one EKF-residualized Gaussian-mixture nonlinear update."""
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported structured nonlinear observation: {observation}")
+
+    prev_mean, prev_var = mixture_mean_and_var(
+        prev_weights,
+        prev_component_mean,
+        prev_component_var,
+    )
+    features = _mlp_features(prev_mean, prev_var, x_t, y_t, state_params)
+    hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
+    raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    raw = jnp.reshape(raw, raw.shape[:-1] + (num_components, 6))
+    pred_var = prev_var + state_params.q
+    obs_mean = x_t * jnp.sin(prev_mean)
+    obs_jacobian = x_t * jnp.cos(prev_mean)
+    innovation = y_t - obs_mean
+    innovation_var = obs_jacobian**2 * pred_var + state_params.r
+    base_gain = pred_var * obs_jacobian / innovation_var
+    gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 1])
+    component_mean = prev_mean[..., None] + gain_scale * base_gain[..., None] * innovation[
+        ..., None
+    ]
+    base_filter_var = pred_var * state_params.r / innovation_var
+    component_var = base_filter_var[..., None] * jnp.exp(jnp.clip(raw[..., 2], -5.0, 5.0))
+    component_var = component_var + min_var
+    backward_a = raw[..., 3]
+    return GaussianMixtureMLPOutputs(
+        filter_weights=jax.nn.softmax(raw[..., 0], axis=-1),
+        component_mean=component_mean,
+        component_var=component_var,
+        backward_a=backward_a,
+        backward_b=prev_mean[..., None] - backward_a * component_mean + raw[..., 4],
+        backward_var=jax.nn.softplus(raw[..., 5]) + min_var,
+    )
+
+
 def transition_prediction_outputs(
     prev_mean: jax.Array,
     prev_var: jax.Array,
@@ -562,18 +673,49 @@ def transition_prediction_outputs(
     )
 
 
+def mixture_transition_prediction_outputs(
+    prev_weights: jax.Array,
+    prev_component_mean: jax.Array,
+    prev_component_var: jax.Array,
+    state_params: LinearGaussianParams,
+) -> GaussianMixtureMLPOutputs:
+    """Return componentwise random-walk transition update for masked measurements."""
+
+    pred_var = prev_component_var + state_params.q
+    backward_a = prev_component_var / pred_var
+    return GaussianMixtureMLPOutputs(
+        filter_weights=prev_weights,
+        component_mean=prev_component_mean,
+        component_var=pred_var,
+        backward_a=backward_a,
+        backward_b=prev_component_mean - backward_a * prev_component_mean,
+        backward_var=prev_component_var * state_params.q / pred_var,
+    )
+
+
 def _where_outputs(
     condition: jax.Array,
-    true_outputs: StructuredMLPOutputs,
-    false_outputs: StructuredMLPOutputs,
-) -> StructuredMLPOutputs:
+    true_outputs: StructuredMLPOutputs | GaussianMixtureMLPOutputs,
+    false_outputs: StructuredMLPOutputs | GaussianMixtureMLPOutputs,
+) -> StructuredMLPOutputs | GaussianMixtureMLPOutputs:
     condition = condition.astype(bool)
-    return StructuredMLPOutputs(
+    return type(true_outputs)(
         *(
-            jnp.where(condition, true_value, false_value)
+            jnp.where(
+                _expand_condition_for_value(condition, true_value),
+                true_value,
+                false_value,
+            )
             for true_value, false_value in zip(true_outputs, false_outputs, strict=True)
         )
     )
+
+
+def _expand_condition_for_value(condition: jax.Array, value: jax.Array) -> jax.Array:
+    extra_dims = value.ndim - condition.ndim
+    if extra_dims <= 0:
+        return condition
+    return jnp.reshape(condition, condition.shape + (1,) * extra_dims)
 
 
 def _normal_log_prob(

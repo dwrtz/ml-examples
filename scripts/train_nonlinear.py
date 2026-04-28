@@ -15,11 +15,16 @@ import yaml
 from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
+    GaussianMixtureMLPOutputs,
     direct_mlp_step,
+    direct_mixture_mlp_step,
     edge_mean_cov_from_outputs,
+    init_direct_mixture_mlp_params,
     init_direct_mlp_params,
+    init_structured_mixture_mlp_params,
     init_structured_mlp_params,
     run_direct_mlp_filter,
+    run_direct_mixture_mlp_filter,
     run_direct_mlp_teacher_forced,
 )
 from vbf.nonlinear import (
@@ -31,8 +36,10 @@ from vbf.nonlinear import (
     nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
     nonlinear_structured_mlp_step,
+    run_nonlinear_structured_mixture_mlp_filter,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
+    mixture_transition_prediction_outputs,
     transition_prediction_outputs,
 )
 from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
@@ -63,6 +70,17 @@ def main() -> None:
     evaluation_config = config.get("evaluation", {})
     reference_config = GridReferenceConfig(**config.get("reference", {}))
     min_var = float(training_config.get("min_var", 1e-6))
+    objective_family = str(training_config.get("objective_family", "elbo"))
+    num_importance_samples = int(
+        training_config.get(
+            "num_importance_samples",
+            training_config.get("joint_elbo_num_samples", 16),
+        )
+    )
+    renyi_alpha = float(training_config.get("renyi_alpha", 1.0))
+    entropy_bonus_weight = float(training_config.get("entropy_bonus_weight", 0.0))
+    posterior_family = str(training_config.get("posterior_family", "gaussian"))
+    mixture_components = int(training_config.get("mixture_components", 1))
     elbo_weight = float(training_config.get("elbo_weight", 1.0))
     joint_elbo_weight = float(training_config.get("joint_elbo_weight", 0.0))
     joint_elbo_horizon = int(training_config.get("joint_elbo_horizon", 1))
@@ -119,6 +137,20 @@ def main() -> None:
         raise ValueError("joint_elbo_num_windows must be positive")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
+    if objective_family not in {"elbo", "iwae", "renyi"}:
+        raise ValueError("objective_family must be one of: elbo, iwae, renyi")
+    if num_importance_samples <= 0:
+        raise ValueError("num_importance_samples must be positive")
+    if not 0.0 < renyi_alpha <= 1.0:
+        raise ValueError("renyi_alpha must be in (0, 1]")
+    if entropy_bonus_weight < 0.0:
+        raise ValueError("entropy_bonus_weight must be nonnegative")
+    if posterior_family not in {"gaussian", "gaussian_mixture"}:
+        raise ValueError("posterior_family must be one of: gaussian, gaussian_mixture")
+    if posterior_family == "gaussian" and mixture_components != 1:
+        raise ValueError("mixture_components must be 1 for posterior_family='gaussian'")
+    if posterior_family == "gaussian_mixture" and mixture_components <= 1:
+        raise ValueError("gaussian_mixture requires mixture_components > 1")
     if predictive_y_estimator != "quadrature":
         raise ValueError("Only predictive_y_estimator='quadrature' is supported")
     if not 0.0 <= mask_y_probability <= 1.0:
@@ -184,6 +216,8 @@ def main() -> None:
         str(config["model"]),
         jax.random.PRNGKey(int(config["seed"]) + 1),
         hidden_dim=int(training_config["hidden_dim"]),
+        posterior_family=posterior_family,
+        mixture_components=mixture_components,
     )
     opt_state = init_adam(params)
 
@@ -206,6 +240,8 @@ def main() -> None:
                 train_reference.filter_var,
                 observation=data_config.observation,
                 min_var=min_var,
+                posterior_family=posterior_family,
+                mixture_components=mixture_components,
             )
             if teacher_forced
             else _run_model_filter(
@@ -216,6 +252,8 @@ def main() -> None:
                 observation=data_config.observation,
                 min_var=min_var,
                 y_observed=y_observed,
+                posterior_family=posterior_family,
+                mixture_components=mixture_components,
             )
         )
         loss = jnp.asarray(0.0, dtype=batch_x.dtype)
@@ -232,17 +270,26 @@ def main() -> None:
             )
         if joint_elbo_weight != 0.0:
             joint_key = jax.random.fold_in(key, joint_elbo_window_seed_offset)
-            loss = loss - joint_elbo_weight * jnp.mean(
-                _nonlinear_windowed_joint_elbo(
-                    outputs,
-                    batch,
-                    state_params,
-                    joint_key,
-                    observation=data_config.observation,
-                    horizon=joint_elbo_horizon,
-                    num_samples=joint_elbo_num_samples,
-                    num_windows=joint_elbo_num_windows,
-                )
+            joint_objective = _nonlinear_windowed_joint_objective(
+                outputs,
+                batch,
+                state_params,
+                joint_key,
+                observation=data_config.observation,
+                horizon=joint_elbo_horizon,
+                num_samples=(
+                    num_importance_samples
+                    if objective_family in {"iwae", "renyi"}
+                    else joint_elbo_num_samples
+                ),
+                num_windows=joint_elbo_num_windows,
+                objective_family=objective_family,
+                renyi_alpha=renyi_alpha,
+            )
+            loss = loss - joint_elbo_weight * jnp.mean(joint_objective)
+        if entropy_bonus_weight != 0.0:
+            loss = loss - entropy_bonus_weight * jnp.mean(
+                _gaussian_filter_entropy(outputs.filter_var)
             )
         if predictive_y_weight != 0.0:
             prev_mean, prev_var = previous_filter_beliefs(
@@ -250,14 +297,25 @@ def main() -> None:
                 outputs.filter_var,
                 state_params,
             )
-            predictive_y_log_prob = nonlinear_preassimilation_log_prob_y(
-                prev_mean,
-                prev_var,
-                batch.x,
-                batch.y,
-                state_params,
-                observation=data_config.observation,
-                num_points=predictive_y_num_samples,
+            predictive_y_log_prob = (
+                _nonlinear_mixture_preassimilation_log_prob_y(
+                    outputs,
+                    batch.x,
+                    batch.y,
+                    state_params,
+                    observation=data_config.observation,
+                    num_points=predictive_y_num_samples,
+                )
+                if _is_mixture_outputs(outputs)
+                else nonlinear_preassimilation_log_prob_y(
+                    prev_mean,
+                    prev_var,
+                    batch.x,
+                    batch.y,
+                    state_params,
+                    observation=data_config.observation,
+                    num_points=predictive_y_num_samples,
+                )
             )
             loss = loss - predictive_y_weight * jnp.mean(predictive_y_log_prob)
         if reference_mean_weight != 0.0:
@@ -367,6 +425,8 @@ def main() -> None:
         observation=eval_data_config.observation,
         min_var=min_var,
         y_observed=eval_y_observed,
+        posterior_family=posterior_family,
+        mixture_components=mixture_components,
     )
     eval_cached = load_or_compute_nonlinear_reference(
         eval_data_config,
@@ -389,6 +449,8 @@ def main() -> None:
             reference.filter_var,
             observation=eval_data_config.observation,
             min_var=min_var,
+            posterior_family=posterior_family,
+            mixture_components=mixture_components,
         )
     learned_predictive_mean, learned_predictive_var = nonlinear_predictive_moments_from_filter(
         outputs.filter_mean,
@@ -397,7 +459,7 @@ def main() -> None:
         state_params,
         observation=eval_data_config.observation,
     )
-    learned_state_nll = scalar_gaussian_nll(eval_batch.z, outputs.filter_mean, outputs.filter_var)
+    learned_state_nll = _state_nll(outputs, eval_batch.z)
     reference_state_nll = scalar_gaussian_nll(
         eval_batch.z,
         reference.filter_mean,
@@ -413,14 +475,25 @@ def main() -> None:
         outputs.filter_var,
         state_params,
     )
-    learned_predictive_y_nll = -nonlinear_preassimilation_log_prob_y(
-        eval_prev_mean,
-        eval_prev_var,
-        eval_batch.x,
-        eval_batch.y,
-        state_params,
-        observation=eval_data_config.observation,
-        num_points=predictive_y_num_samples,
+    learned_predictive_y_nll = -(
+        _nonlinear_mixture_preassimilation_log_prob_y(
+            outputs,
+            eval_batch.x,
+            eval_batch.y,
+            state_params,
+            observation=eval_data_config.observation,
+            num_points=predictive_y_num_samples,
+        )
+        if _is_mixture_outputs(outputs)
+        else nonlinear_preassimilation_log_prob_y(
+            eval_prev_mean,
+            eval_prev_var,
+            eval_batch.x,
+            eval_batch.y,
+            state_params,
+            observation=eval_data_config.observation,
+            num_points=predictive_y_num_samples,
+        )
     )
     reference_predictive_nll = scalar_gaussian_nll(
         eval_batch.y,
@@ -436,6 +509,12 @@ def main() -> None:
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": int(training_config["steps"]),
         "num_elbo_samples": int(training_config.get("num_elbo_samples", 8)),
+        "objective_family": objective_family,
+        "num_importance_samples": num_importance_samples,
+        "renyi_alpha": renyi_alpha,
+        "entropy_bonus_weight": entropy_bonus_weight,
+        "posterior_family": posterior_family,
+        "mixture_components": mixture_components,
         "elbo_weight": elbo_weight,
         "joint_elbo_weight": joint_elbo_weight,
         "joint_elbo_horizon": joint_elbo_horizon,
@@ -445,6 +524,8 @@ def main() -> None:
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_y_estimator": predictive_y_estimator,
+        "state_nll_estimator": "mixture_density" if _is_mixture_outputs(outputs) else "gaussian",
+        "coverage_estimator": "moment_gaussian",
         "reference_mean_weight": reference_mean_weight,
         "reference_rollout_weight": reference_rollout_weight,
         "reference_rollout_horizon": reference_rollout_horizon,
@@ -500,11 +581,7 @@ def main() -> None:
         "mean_edge_covariance_trace": float(jnp.mean(jnp.trace(edge_cov, axis1=-2, axis2=-1))),
     }
     if teacher_outputs is not None:
-        teacher_state_nll = scalar_gaussian_nll(
-            eval_batch.z,
-            teacher_outputs.filter_mean,
-            teacher_outputs.filter_var,
-        )
+        teacher_state_nll = _state_nll(teacher_outputs, eval_batch.z)
         metrics.update(
             {
                 "teacher_forced_state_nll": float(jnp.mean(teacher_state_nll)),
@@ -535,23 +612,34 @@ def main() -> None:
     np.savez(
         output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
     )
-    np.savez(
-        output_dir / "diagnostics.npz",
-        x=np.asarray(eval_batch.x),
-        y=np.asarray(eval_batch.y),
-        z=np.asarray(eval_batch.z),
-        learned_filter_mean=np.asarray(outputs.filter_mean),
-        learned_filter_var=np.asarray(outputs.filter_var),
-        reference_filter_mean=np.asarray(reference.filter_mean),
-        reference_filter_var=np.asarray(reference.filter_var),
-        learned_predictive_mean=np.asarray(learned_predictive_mean),
-        learned_predictive_var=np.asarray(learned_predictive_var),
-        reference_predictive_mean=np.asarray(reference.predictive_mean),
-        reference_predictive_var=np.asarray(reference.predictive_var),
-        y_observed_mask=np.asarray(eval_y_observed),
-        loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
-        loss_history_loss=np.asarray([loss for _, loss in history], dtype=np.float64),
-    )
+    diagnostics = {
+        "x": np.asarray(eval_batch.x),
+        "y": np.asarray(eval_batch.y),
+        "z": np.asarray(eval_batch.z),
+        "learned_filter_mean": np.asarray(outputs.filter_mean),
+        "learned_filter_var": np.asarray(outputs.filter_var),
+        "reference_filter_mean": np.asarray(reference.filter_mean),
+        "reference_filter_var": np.asarray(reference.filter_var),
+        "learned_predictive_mean": np.asarray(learned_predictive_mean),
+        "learned_predictive_var": np.asarray(learned_predictive_var),
+        "reference_predictive_mean": np.asarray(reference.predictive_mean),
+        "reference_predictive_var": np.asarray(reference.predictive_var),
+        "y_observed_mask": np.asarray(eval_y_observed),
+        "loss_history_step": np.asarray([step for step, _ in history], dtype=np.int64),
+        "loss_history_loss": np.asarray([loss for _, loss in history], dtype=np.float64),
+    }
+    if _is_mixture_outputs(outputs):
+        diagnostics.update(
+            {
+                "learned_filter_weights": np.asarray(outputs.filter_weights),
+                "learned_component_mean": np.asarray(outputs.component_mean),
+                "learned_component_var": np.asarray(outputs.component_var),
+                "learned_backward_a": np.asarray(outputs.backward_a),
+                "learned_backward_b": np.asarray(outputs.backward_b),
+                "learned_backward_var": np.asarray(outputs.backward_var),
+            }
+        )
+    np.savez(output_dir / "diagnostics.npz", **diagnostics)
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
     print(f"Wrote {summary_path}")
@@ -567,7 +655,20 @@ def _init_model_params(
     key: jax.Array,
     *,
     hidden_dim: int,
+    posterior_family: str = "gaussian",
+    mixture_components: int = 1,
 ) -> dict[str, jax.Array]:
+    if posterior_family == "gaussian_mixture":
+        init_fn = (
+            init_structured_mixture_mlp_params
+            if model == "structured_elbo_sine_mlp"
+            else init_direct_mixture_mlp_params
+        )
+        return init_fn(
+            key,
+            hidden_dim=hidden_dim,
+            num_components=mixture_components,
+        )
     if model == "structured_elbo_sine_mlp":
         return init_structured_mlp_params(key, hidden_dim=hidden_dim)
     return init_direct_mlp_params(key, hidden_dim=hidden_dim)
@@ -582,7 +683,28 @@ def _run_model_filter(
     observation: str,
     min_var: float,
     y_observed: jax.Array | None = None,
+    posterior_family: str = "gaussian",
+    mixture_components: int = 1,
 ):
+    if posterior_family == "gaussian_mixture":
+        if model == "structured_elbo_sine_mlp":
+            return run_nonlinear_structured_mixture_mlp_filter(
+                params,
+                batch,
+                state_params,
+                num_components=mixture_components,
+                observation=observation,
+                min_var=min_var,
+                y_observed=y_observed,
+            )
+        return _run_direct_mixture_mlp_filter(
+            params,
+            batch,
+            state_params,
+            num_components=mixture_components,
+            min_var=min_var,
+            y_observed=y_observed,
+        )
     if model == "structured_elbo_sine_mlp":
         return run_nonlinear_structured_mlp_filter(
             params,
@@ -641,14 +763,83 @@ def _run_direct_mlp_filter(
     return type(outputs)(*(_time_major_to_batch_major(item) for item in outputs))
 
 
+def _run_direct_mixture_mlp_filter(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    min_var: float,
+    y_observed: jax.Array | None,
+):
+    if y_observed is None:
+        return run_direct_mixture_mlp_filter(
+            params,
+            batch,
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+        )
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+    observed_bt = y_observed.T
+
+    def step(
+        carry: tuple[jax.Array, jax.Array, jax.Array],
+        obs: tuple[jax.Array, jax.Array, jax.Array],
+    ):
+        prev_weights, prev_mean, prev_var = carry
+        x_t, y_t, observed_t = obs
+        update_outputs = direct_mixture_mlp_step(
+            params,
+            prev_weights,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+        )
+        transition_outputs = mixture_transition_prediction_outputs(
+            prev_weights,
+            prev_mean,
+            prev_var,
+            state_params,
+        )
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
+        return (outputs.filter_weights, outputs.component_mean, outputs.component_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
+    return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
 def _where_outputs(condition, true_outputs, false_outputs):
     condition = condition.astype(bool)
     return type(true_outputs)(
         *(
-            jnp.where(condition, true_value, false_value)
+            jnp.where(
+                _expand_condition_for_value(condition, true_value),
+                true_value,
+                false_value,
+            )
             for true_value, false_value in zip(true_outputs, false_outputs, strict=True)
         )
     )
+
+
+def _expand_condition_for_value(condition: jax.Array, value: jax.Array) -> jax.Array:
+    extra_dims = value.ndim - condition.ndim
+    if extra_dims <= 0:
+        return condition
+    return jnp.reshape(condition, condition.shape + (1,) * extra_dims)
 
 
 def _time_major_to_batch_major(value: jax.Array) -> jax.Array:
@@ -665,7 +856,11 @@ def _run_model_teacher_forced(
     *,
     observation: str,
     min_var: float,
+    posterior_family: str = "gaussian",
+    mixture_components: int = 1,
 ):
+    if posterior_family == "gaussian_mixture":
+        raise ValueError("teacher-forced gaussian_mixture training is not implemented")
     if model == "structured_elbo_sine_mlp":
         return run_nonlinear_structured_mlp_teacher_forced(
             params,
@@ -788,6 +983,36 @@ def _nonlinear_edge_elbo(
     observation: str,
     num_samples: int,
 ) -> jax.Array:
+    log_weights = _nonlinear_edge_log_weights(
+        outputs,
+        batch,
+        state_params,
+        key,
+        observation=observation,
+        num_samples=num_samples,
+    )
+    return jnp.mean(log_weights, axis=0)
+
+
+def _nonlinear_edge_log_weights(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    num_samples: int,
+) -> jax.Array:
+    if _is_mixture_outputs(outputs):
+        return _nonlinear_mixture_edge_log_weights(
+            outputs,
+            batch,
+            state_params,
+            key,
+            observation=observation,
+            num_samples=num_samples,
+        )
+
     eps_t_key, eps_tm1_key = jax.random.split(key)
     sample_shape = (num_samples,) + outputs.filter_mean.shape
     eps_t = jax.random.normal(eps_t_key, shape=sample_shape, dtype=outputs.filter_mean.dtype)
@@ -799,14 +1024,13 @@ def _nonlinear_edge_elbo(
         outputs.filter_mean, outputs.filter_var, state_params
     )
     observation_mean = nonlinear_observation_mean(z_t, batch.x[None, ...], observation)
-    elbo = (
+    return (
         _normal_log_prob(batch.y[None, ...], observation_mean, state_params.r)
         + _normal_log_prob(z_t, z_tm1, state_params.q)
         + _normal_log_prob(z_tm1, prev_mean[None, ...], prev_var[None, ...])
         - _normal_log_prob(z_t, outputs.filter_mean[None, ...], outputs.filter_var[None, ...])
         - _normal_log_prob(z_tm1, backward_mean, outputs.backward_var[None, ...])
     )
-    return jnp.mean(elbo, axis=0)
 
 
 def _nonlinear_windowed_joint_elbo(
@@ -820,14 +1044,85 @@ def _nonlinear_windowed_joint_elbo(
     num_samples: int,
     num_windows: int,
 ) -> jax.Array:
+    return _nonlinear_windowed_joint_objective(
+        outputs,
+        batch,
+        state_params,
+        key,
+        observation=observation,
+        horizon=horizon,
+        num_samples=num_samples,
+        num_windows=num_windows,
+        objective_family="elbo",
+        renyi_alpha=1.0,
+    )
+
+
+def _nonlinear_windowed_joint_objective(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    horizon: int,
+    num_samples: int,
+    num_windows: int,
+    objective_family: str,
+    renyi_alpha: float,
+) -> jax.Array:
+    log_weights = _nonlinear_windowed_joint_log_weights(
+        outputs,
+        batch,
+        state_params,
+        key,
+        observation=observation,
+        horizon=horizon,
+        num_samples=num_samples,
+        num_windows=num_windows,
+    )
+    if objective_family == "elbo":
+        return jnp.mean(log_weights, axis=0)
+    if objective_family == "iwae":
+        return jax.nn.logsumexp(log_weights, axis=0) - jnp.log(num_samples)
+    if objective_family == "renyi":
+        if renyi_alpha == 1.0:
+            return jnp.mean(log_weights, axis=0)
+        scale = 1.0 - renyi_alpha
+        return (jax.nn.logsumexp(scale * log_weights, axis=0) - jnp.log(num_samples)) / scale
+    raise ValueError(f"Unsupported objective_family: {objective_family}")
+
+
+def _nonlinear_windowed_joint_log_weights(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    horizon: int,
+    num_samples: int,
+    num_windows: int,
+) -> jax.Array:
     if horizon == 1:
-        return _nonlinear_edge_elbo(
+        return _nonlinear_edge_log_weights(
             outputs,
             batch,
             state_params,
             key,
             observation=observation,
             num_samples=num_samples,
+        )
+    if _is_mixture_outputs(outputs):
+        return _nonlinear_mixture_windowed_joint_log_weights(
+            outputs,
+            batch,
+            state_params,
+            key,
+            observation=observation,
+            horizon=horizon,
+            num_samples=num_samples,
+            num_windows=num_windows,
         )
 
     time_steps = batch.x.shape[1]
@@ -893,7 +1188,311 @@ def _nonlinear_windowed_joint_elbo(
     initial_mean = jnp.take(prev_mean, first_transition_indices, axis=1)
     initial_var = jnp.take(prev_var, first_transition_indices, axis=1)
     log_score = log_score + _normal_log_prob(z_t, initial_mean[None, ...], initial_var[None, ...])
-    return jnp.mean(log_score - log_q, axis=0)
+    return log_score - log_q
+
+
+def _gaussian_filter_entropy(filter_var: jax.Array) -> jax.Array:
+    return 0.5 * (LOG_2PI + 1.0 + jnp.log(filter_var))
+
+
+def _nonlinear_mixture_edge_log_weights(
+    outputs: GaussianMixtureMLPOutputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    num_samples: int,
+) -> jax.Array:
+    z_key, backward_key = jax.random.split(key)
+    z_t, _ = _sample_mixture_marginal(
+        z_key,
+        outputs.filter_weights,
+        outputs.component_mean,
+        outputs.component_var,
+        sample_shape=(num_samples,),
+    )
+    z_tm1, _ = _sample_mixture_backward_conditional(
+        backward_key,
+        z_t,
+        outputs.filter_weights,
+        outputs.component_mean,
+        outputs.component_var,
+        outputs.backward_a,
+        outputs.backward_b,
+        outputs.backward_var,
+    )
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(
+        outputs,
+        state_params,
+    )
+    observation_mean = nonlinear_observation_mean(z_t, batch.x[None, ...], observation)
+    return (
+        _normal_log_prob(batch.y[None, ...], observation_mean, state_params.r)
+        + _normal_log_prob(z_t, z_tm1, state_params.q)
+        + _mixture_log_prob(z_tm1, prev_weights, prev_mean, prev_var)
+        - _mixture_log_prob(
+            z_t,
+            outputs.filter_weights,
+            outputs.component_mean,
+            outputs.component_var,
+        )
+        - _mixture_backward_log_prob(
+            z_tm1,
+            z_t,
+            outputs.filter_weights,
+            outputs.component_mean,
+            outputs.component_var,
+            outputs.backward_a,
+            outputs.backward_b,
+            outputs.backward_var,
+        )
+    )
+
+
+def _nonlinear_mixture_windowed_joint_log_weights(
+    outputs: GaussianMixtureMLPOutputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    horizon: int,
+    num_samples: int,
+    num_windows: int,
+) -> jax.Array:
+    time_steps = batch.x.shape[1]
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    if horizon > time_steps:
+        raise ValueError("horizon cannot exceed batch time_steps")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+    if num_windows <= 0:
+        raise ValueError("num_windows must be positive")
+
+    possible_windows = time_steps - horizon + 1
+    end_indices = (
+        jnp.arange(horizon - 1, time_steps)
+        if num_windows >= possible_windows
+        else jax.random.randint(
+            key,
+            shape=(num_windows,),
+            minval=horizon - 1,
+            maxval=time_steps,
+        )
+    )
+    sample_key, *backward_keys = jax.random.split(key, horizon + 1)
+    end_weights = jnp.take(outputs.filter_weights, end_indices, axis=1)
+    end_mean = jnp.take(outputs.component_mean, end_indices, axis=1)
+    end_var = jnp.take(outputs.component_var, end_indices, axis=1)
+    z_t, _ = _sample_mixture_marginal(
+        sample_key,
+        end_weights,
+        end_mean,
+        end_var,
+        sample_shape=(num_samples,),
+    )
+    log_q = _mixture_log_prob(z_t, end_weights, end_mean, end_var)
+    log_score = jnp.zeros_like(log_q)
+
+    for offset in range(horizon):
+        t_indices = end_indices - offset
+        x_t = jnp.take(batch.x, t_indices, axis=1)
+        y_t = jnp.take(batch.y, t_indices, axis=1)
+        obs_mean = nonlinear_observation_mean(z_t, x_t[None, ...], observation)
+        log_score = log_score + _normal_log_prob(y_t[None, ...], obs_mean, state_params.r)
+
+        weights_t = jnp.take(outputs.filter_weights, t_indices, axis=1)
+        mean_t = jnp.take(outputs.component_mean, t_indices, axis=1)
+        var_t = jnp.take(outputs.component_var, t_indices, axis=1)
+        backward_a = jnp.take(outputs.backward_a, t_indices, axis=1)
+        backward_b = jnp.take(outputs.backward_b, t_indices, axis=1)
+        backward_var = jnp.take(outputs.backward_var, t_indices, axis=1)
+        z_prev, _ = _sample_mixture_backward_conditional(
+            backward_keys[offset],
+            z_t,
+            weights_t,
+            mean_t,
+            var_t,
+            backward_a,
+            backward_b,
+            backward_var,
+        )
+        log_score = log_score + _normal_log_prob(z_t, z_prev, state_params.q)
+        log_q = log_q + _mixture_backward_log_prob(
+            z_prev,
+            z_t,
+            weights_t,
+            mean_t,
+            var_t,
+            backward_a,
+            backward_b,
+            backward_var,
+        )
+        z_t = z_prev
+
+    first_transition_indices = end_indices - horizon + 1
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(outputs, state_params)
+    initial_weights = jnp.take(prev_weights, first_transition_indices, axis=1)
+    initial_mean = jnp.take(prev_mean, first_transition_indices, axis=1)
+    initial_var = jnp.take(prev_var, first_transition_indices, axis=1)
+    log_score = log_score + _mixture_log_prob(z_t, initial_weights, initial_mean, initial_var)
+    return log_score - log_q
+
+
+def _state_nll(outputs, z: jax.Array) -> jax.Array:
+    if _is_mixture_outputs(outputs):
+        return -_mixture_log_prob(
+            z,
+            outputs.filter_weights,
+            outputs.component_mean,
+            outputs.component_var,
+        )
+    return scalar_gaussian_nll(z, outputs.filter_mean, outputs.filter_var)
+
+
+def _nonlinear_mixture_preassimilation_log_prob_y(
+    outputs: GaussianMixtureMLPOutputs,
+    x: jax.Array,
+    y: jax.Array,
+    params: LinearGaussianParams,
+    *,
+    observation: str,
+    num_points: int,
+) -> jax.Array:
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported nonlinear predictive likelihood: {observation}")
+    if num_points <= 0:
+        raise ValueError("num_points must be positive")
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(outputs, params)
+    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
+    nodes = jnp.asarray(nodes_np, dtype=prev_mean.dtype)
+    log_quadrature_weights = jnp.log(jnp.asarray(weights_np, dtype=prev_mean.dtype))
+    pred_state_var = prev_var + params.q
+    z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
+    obs_mean = x[..., None, None] * jnp.sin(z)
+    log_likelihood = _normal_log_prob(y[..., None, None], obs_mean, params.r)
+    component_log_prob = (
+        jnp.log(prev_weights)
+        + jax.nn.logsumexp(log_quadrature_weights + log_likelihood, axis=-1)
+        - 0.5 * jnp.log(jnp.pi)
+    )
+    return jax.nn.logsumexp(component_log_prob, axis=-1)
+
+
+def _sample_mixture_marginal(
+    key: jax.Array,
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    *,
+    sample_shape: tuple[int, ...],
+) -> tuple[jax.Array, jax.Array]:
+    key_component, key_noise = jax.random.split(key)
+    component = jax.random.categorical(
+        key_component,
+        logits=jnp.log(weights),
+        axis=-1,
+        shape=sample_shape + weights.shape[:-1],
+    )
+    selected_mean = _take_component(mean, component)
+    selected_var = _take_component(var, component)
+    noise = jax.random.normal(key_noise, shape=selected_mean.shape, dtype=mean.dtype)
+    return selected_mean + jnp.sqrt(selected_var) * noise, component
+
+
+def _sample_mixture_backward_conditional(
+    key: jax.Array,
+    z_t: jax.Array,
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    backward_a: jax.Array,
+    backward_b: jax.Array,
+    backward_var: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    key_component, key_noise = jax.random.split(key)
+    component_logits = jnp.log(weights) + _normal_log_prob(z_t[..., None], mean, var)
+    component = jax.random.categorical(key_component, logits=component_logits, axis=-1)
+    selected_a = _take_component(backward_a, component)
+    selected_b = _take_component(backward_b, component)
+    selected_var = _take_component(backward_var, component)
+    backward_mean = selected_a * z_t + selected_b
+    noise = jax.random.normal(key_noise, shape=z_t.shape, dtype=z_t.dtype)
+    return backward_mean + jnp.sqrt(selected_var) * noise, component
+
+
+def _mixture_backward_log_prob(
+    z_tm1: jax.Array,
+    z_t: jax.Array,
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    backward_a: jax.Array,
+    backward_b: jax.Array,
+    backward_var: jax.Array,
+) -> jax.Array:
+    log_edge = jax.nn.logsumexp(
+        jnp.log(weights)
+        + _normal_log_prob(z_t[..., None], mean, var)
+        + _normal_log_prob(z_tm1[..., None], backward_a * z_t[..., None] + backward_b, backward_var),
+        axis=-1,
+    )
+    return log_edge - _mixture_log_prob(z_t, weights, mean, var)
+
+
+def _mixture_log_prob(
+    value: jax.Array,
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+) -> jax.Array:
+    return jax.nn.logsumexp(
+        jnp.log(weights) + _normal_log_prob(value[..., None], mean, var),
+        axis=-1,
+    )
+
+
+def _previous_mixture_filter_beliefs(
+    outputs: GaussianMixtureMLPOutputs,
+    state_params: LinearGaussianParams,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    batch_size = outputs.component_mean.shape[0]
+    num_components = outputs.component_mean.shape[-1]
+    initial_weights = jnp.full(
+        (batch_size, 1, num_components),
+        1.0 / num_components,
+        dtype=outputs.filter_weights.dtype,
+    )
+    initial_mean = jnp.full(
+        (batch_size, 1, num_components),
+        state_params.m0,
+        dtype=outputs.component_mean.dtype,
+    )
+    initial_var = jnp.full(
+        (batch_size, 1, num_components),
+        state_params.p0,
+        dtype=outputs.component_var.dtype,
+    )
+    return (
+        jnp.concatenate((initial_weights, outputs.filter_weights[:, :-1]), axis=1),
+        jnp.concatenate((initial_mean, outputs.component_mean[:, :-1]), axis=1),
+        jnp.concatenate((initial_var, outputs.component_var[:, :-1]), axis=1),
+    )
+
+
+def _take_component(values: jax.Array, component: jax.Array) -> jax.Array:
+    sample_ndim = component.ndim - (values.ndim - 1)
+    if sample_ndim < 0:
+        raise ValueError("component shape is not compatible with values")
+    broadcast_values = jnp.reshape(values, (1,) * sample_ndim + values.shape)
+    broadcast_values = jnp.broadcast_to(broadcast_values, component.shape + values.shape[-1:])
+    return jnp.take_along_axis(broadcast_values, component[..., None], axis=-1)[..., 0]
+
+
+def _is_mixture_outputs(outputs) -> bool:
+    return isinstance(outputs, GaussianMixtureMLPOutputs)
 
 
 def _previous_filter_beliefs(

@@ -21,9 +21,11 @@ from vbf.losses import (
 )
 from vbf.models.cells import (
     edge_mean_cov_from_outputs,
+    init_direct_mixture_mlp_params,
     init_direct_mlp_params,
     init_split_head_mlp_params,
     init_structured_mlp_params,
+    run_direct_mixture_mlp_filter,
     run_direct_mlp_filter,
     run_direct_mlp_teacher_forced,
     run_split_head_mlp_filter,
@@ -359,3 +361,38 @@ def test_direct_mlp_filter_shapes() -> None:
     assert rollout_outputs.filter_var.shape == (3, 5)
     assert teacher_outputs.filter_mean.shape == (3, 5)
     assert teacher_outputs.backward_var.shape == (3, 5)
+
+
+def test_direct_mixture_mlp_filter_shapes_and_moments() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=23,
+    )
+    mlp_params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(0),
+        hidden_dim=8,
+        num_components=2,
+    )
+
+    outputs = run_direct_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        state_params,
+        num_components=2,
+    )
+    edge_mean, edge_cov = edge_mean_cov_from_outputs(outputs)
+
+    assert outputs.filter_weights.shape == (3, 5, 2)
+    assert outputs.component_mean.shape == (3, 5, 2)
+    assert outputs.component_var.shape == (3, 5, 2)
+    assert outputs.filter_mean.shape == (3, 5)
+    assert outputs.filter_var.shape == (3, 5)
+    assert edge_mean.shape == (3, 5, 2)
+    assert edge_cov.shape == (3, 5, 2, 2)
+    np.testing.assert_allclose(
+        np.asarray(outputs.filter_weights.sum(axis=-1)),
+        np.ones((3, 5)),
+        atol=1e-12,
+    )

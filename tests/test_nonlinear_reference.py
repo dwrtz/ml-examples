@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 
 from vbf.data import LinearGaussianParams
-from vbf.models.cells import init_structured_mlp_params
+from vbf.models.cells import init_structured_mixture_mlp_params, init_structured_mlp_params
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
@@ -14,6 +14,7 @@ from vbf.nonlinear import (
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
+    run_nonlinear_structured_mixture_mlp_filter,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
 )
@@ -254,6 +255,59 @@ def test_nonlinear_structured_mlp_zero_mask_matches_default_rollout() -> None:
 
     assert jnp.allclose(masked_outputs.filter_mean, default_outputs.filter_mean)
     assert jnp.allclose(masked_outputs.filter_var, default_outputs.filter_var)
+
+
+def test_nonlinear_structured_mixture_mlp_filter_shapes() -> None:
+    config = NonlinearDataConfig(batch_size=3, time_steps=7, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=139)
+    mlp_params = init_structured_mixture_mlp_params(
+        jax.random.PRNGKey(140),
+        hidden_dim=8,
+        num_components=2,
+    )
+
+    outputs = run_nonlinear_structured_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        num_components=2,
+        observation="x_sine",
+    )
+
+    assert outputs.filter_weights.shape == (3, 7, 2)
+    assert outputs.component_mean.shape == (3, 7, 2)
+    assert outputs.component_var.shape == (3, 7, 2)
+    assert outputs.filter_mean.shape == (3, 7)
+    assert outputs.filter_var.shape == (3, 7)
+    assert jnp.allclose(outputs.filter_weights.sum(axis=-1), 1.0)
+    assert jnp.all(outputs.component_var > 0.0)
+    assert jnp.all(outputs.backward_var > 0.0)
+
+
+def test_nonlinear_structured_mixture_masked_span_uses_transition_variance() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=141)
+    mlp_params = init_structured_mixture_mlp_params(
+        jax.random.PRNGKey(142),
+        hidden_dim=8,
+        num_components=2,
+    )
+    observed = jnp.zeros_like(batch.y, dtype=bool)
+
+    outputs = run_nonlinear_structured_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        num_components=2,
+        observation="x_sine",
+        y_observed=observed,
+    )
+    expected_var = params.p0 + params.q * jnp.arange(1, config.time_steps + 1)
+
+    assert jnp.allclose(outputs.filter_mean, params.m0)
+    assert jnp.allclose(outputs.filter_var, expected_var[None, :])
 
 
 def test_nonlinear_structured_mlp_masked_span_uses_transition_variance() -> None:
