@@ -268,6 +268,15 @@ def _selected_model_specs(
             mask_y_span_probability=0.15,
             mask_y_span_length=4,
         ),
+        "structured_elbo_predictive_y_masked_y_spans_h4": ModelSpec(
+            key="structured_elbo_predictive_y_masked_y_spans_h4",
+            label="EKF-residualized nonlinear MC ELBO + predictive-y and masked-y spans h4",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            predictive_y_weight=1.0,
+            mask_y_span_probability=0.15,
+            mask_y_span_length=4,
+        ),
         "structured_elbo_masked_y_spans_h8": ModelSpec(
             key="structured_elbo_masked_y_spans_h8",
             label="EKF-residualized nonlinear MC ELBO + masked-y spans h8",
