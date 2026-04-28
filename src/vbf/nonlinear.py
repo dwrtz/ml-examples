@@ -68,6 +68,43 @@ class NonlinearReferenceGridOutputs(NamedTuple):
     filter_mass: jax.Array
 
 
+def make_y_observed_mask(
+    *,
+    batch_size: int,
+    time_steps: int,
+    probability: float = 0.0,
+    span_probability: float = 0.0,
+    span_length: int = 1,
+    seed: int,
+) -> jax.Array:
+    """Return a boolean mask where true entries expose `y_t` to the update."""
+
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("probability must be in [0, 1]")
+    if not 0.0 <= span_probability <= 1.0:
+        raise ValueError("span_probability must be in [0, 1]")
+    if span_length <= 0:
+        raise ValueError("span_length must be positive")
+
+    key = jax.random.PRNGKey(seed)
+    key_point, key_span = jax.random.split(key)
+    point_masked = jax.random.bernoulli(
+        key_point,
+        probability,
+        shape=(batch_size, time_steps),
+    )
+    span_starts = jax.random.bernoulli(
+        key_span,
+        span_probability,
+        shape=(batch_size, time_steps),
+    )
+    span_offsets = jnp.arange(span_length)
+    span_indices = jnp.arange(time_steps)[:, None] - span_offsets[None, :]
+    span_indices = jnp.clip(span_indices, 0, time_steps - 1)
+    span_masked = jnp.any(jnp.take(span_starts, span_indices, axis=1), axis=-1)
+    return ~(point_masked | span_masked)
+
+
 def make_nonlinear_batch(
     config: NonlinearDataConfig,
     params: LinearGaussianParams,
@@ -404,16 +441,20 @@ def run_nonlinear_structured_mlp_filter(
     *,
     observation: str = "x_sine",
     min_var: float = 1e-6,
+    y_observed: jax.Array | None = None,
 ) -> StructuredMLPOutputs:
     """Run an EKF-residualized strict nonlinear filter over batch-major episodes."""
 
     x_bt = batch.x.T
     y_bt = batch.y.T
+    if y_observed is None:
+        y_observed = jnp.ones_like(batch.y, dtype=bool)
+    observed_bt = y_observed.T
 
-    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array]):
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array, jax.Array]):
         prev_mean, prev_var = carry
-        x_t, y_t = obs
-        outputs = nonlinear_structured_mlp_step(
+        x_t, y_t, observed_t = obs
+        update_outputs = nonlinear_structured_mlp_step(
             mlp_params,
             prev_mean,
             prev_var,
@@ -423,6 +464,8 @@ def run_nonlinear_structured_mlp_filter(
             observation=observation,
             min_var=min_var,
         )
+        transition_outputs = transition_prediction_outputs(prev_mean, prev_var, state_params)
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
         return (outputs.filter_mean, outputs.filter_var), outputs
 
     batch_size = batch.x.shape[0]
@@ -430,7 +473,7 @@ def run_nonlinear_structured_mlp_filter(
         jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
         jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
     )
-    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
@@ -498,6 +541,38 @@ def nonlinear_structured_mlp_step(
         backward_a=backward_a,
         backward_b=prev_mean - backward_a * filter_mean + raw[..., 3],
         backward_var=jax.nn.softplus(raw[..., 4]) + min_var,
+    )
+
+
+def transition_prediction_outputs(
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    state_params: LinearGaussianParams,
+) -> StructuredMLPOutputs:
+    """Return the exact random-walk transition update for a masked measurement."""
+
+    pred_var = prev_var + state_params.q
+    backward_a = prev_var / pred_var
+    return StructuredMLPOutputs(
+        filter_mean=prev_mean,
+        filter_var=pred_var,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * prev_mean,
+        backward_var=prev_var * state_params.q / pred_var,
+    )
+
+
+def _where_outputs(
+    condition: jax.Array,
+    true_outputs: StructuredMLPOutputs,
+    false_outputs: StructuredMLPOutputs,
+) -> StructuredMLPOutputs:
+    condition = condition.astype(bool)
+    return StructuredMLPOutputs(
+        *(
+            jnp.where(condition, true_value, false_value)
+            for true_value, false_value in zip(true_outputs, false_outputs, strict=True)
+        )
     )
 
 

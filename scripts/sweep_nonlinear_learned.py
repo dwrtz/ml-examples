@@ -46,6 +46,9 @@ class ModelSpec:
     predictive_y_weight: float = 0.0
     predictive_y_num_samples: int = 32
     predictive_y_estimator: str = "quadrature"
+    mask_y_probability: float = 0.0
+    mask_y_span_probability: float = 0.0
+    mask_y_span_length: int = 1
     reference_mean_weight: float = 0.0
     reference_rollout_weight: float = 0.0
     reference_rollout_horizon: int = 1
@@ -242,6 +245,37 @@ def _selected_model_specs(
             reference_variance_ratio_weight=0.0,
             resample_batch=True,
         ),
+        "structured_elbo_masked_y": ModelSpec(
+            key="structured_elbo_masked_y",
+            label="EKF-residualized nonlinear MC ELBO + masked-y updates",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            mask_y_probability=0.15,
+        ),
+        "structured_elbo_masked_y_spans_h2": ModelSpec(
+            key="structured_elbo_masked_y_spans_h2",
+            label="EKF-residualized nonlinear MC ELBO + masked-y spans h2",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            mask_y_span_probability=0.15,
+            mask_y_span_length=2,
+        ),
+        "structured_elbo_masked_y_spans_h4": ModelSpec(
+            key="structured_elbo_masked_y_spans_h4",
+            label="EKF-residualized nonlinear MC ELBO + masked-y spans h4",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            mask_y_span_probability=0.15,
+            mask_y_span_length=4,
+        ),
+        "structured_elbo_masked_y_spans_h8": ModelSpec(
+            key="structured_elbo_masked_y_spans_h8",
+            label="EKF-residualized nonlinear MC ELBO + masked-y spans h8",
+            objective="structured_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            mask_y_span_probability=0.15,
+            mask_y_span_length=8,
+        ),
         "structured_moment_distilled": ModelSpec(
             key="structured_moment_distilled",
             label="EKF-residualized nonlinear MLP + reference moment distillation",
@@ -370,6 +404,9 @@ def _make_train_config(
         "predictive_y_weight": spec.predictive_y_weight,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
+        "mask_y_probability": spec.mask_y_probability,
+        "mask_y_span_probability": spec.mask_y_span_probability,
+        "mask_y_span_length": spec.mask_y_span_length,
         "reference_mean_weight": spec.reference_mean_weight,
         "reference_rollout_weight": spec.reference_rollout_weight,
         "reference_rollout_horizon": spec.reference_rollout_horizon,
@@ -423,6 +460,9 @@ def _load_row(
         "predictive_y_weight": metrics["predictive_y_weight"],
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
+        "mask_y_probability": metrics["mask_y_probability"],
+        "mask_y_span_probability": metrics["mask_y_span_probability"],
+        "mask_y_span_length": metrics["mask_y_span_length"],
         "training_signal": _training_signal(metrics),
         "reference_mean_weight": metrics["reference_mean_weight"],
         "reference_rollout_weight": metrics["reference_rollout_weight"],
@@ -471,6 +511,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "predictive_y_weight",
         "predictive_y_num_samples",
         "predictive_y_estimator",
+        "mask_y_probability",
+        "mask_y_span_probability",
+        "mask_y_span_length",
         "training_signal",
         "reference_mean_weight",
         "reference_rollout_weight",

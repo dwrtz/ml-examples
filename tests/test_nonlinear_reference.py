@@ -6,6 +6,7 @@ from vbf.models.cells import init_structured_mlp_params
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
+    make_y_observed_mask,
     make_nonlinear_batch,
     nonlinear_grid_filter,
     nonlinear_grid_filter_masses,
@@ -213,6 +214,66 @@ def test_nonlinear_structured_mlp_filter_outputs_positive_variances() -> None:
     assert outputs.backward_var.shape == (3, 7)
     assert jnp.all(outputs.filter_var > 0.0)
     assert jnp.all(outputs.backward_var > 0.0)
+
+
+def test_y_observed_mask_defaults_to_all_observed() -> None:
+    mask = make_y_observed_mask(
+        batch_size=3,
+        time_steps=5,
+        probability=0.0,
+        span_probability=0.0,
+        span_length=2,
+        seed=134,
+    )
+
+    assert mask.shape == (3, 5)
+    assert mask.dtype == jnp.bool_
+    assert jnp.all(mask)
+
+
+def test_nonlinear_structured_mlp_zero_mask_matches_default_rollout() -> None:
+    config = NonlinearDataConfig(batch_size=3, time_steps=7, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=135)
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(136), hidden_dim=8)
+    observed = jnp.ones_like(batch.y, dtype=bool)
+
+    default_outputs = run_nonlinear_structured_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        observation="x_sine",
+    )
+    masked_outputs = run_nonlinear_structured_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        observation="x_sine",
+        y_observed=observed,
+    )
+
+    assert jnp.allclose(masked_outputs.filter_mean, default_outputs.filter_mean)
+    assert jnp.allclose(masked_outputs.filter_var, default_outputs.filter_var)
+
+
+def test_nonlinear_structured_mlp_masked_span_uses_transition_variance() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=137)
+    mlp_params = init_structured_mlp_params(jax.random.PRNGKey(138), hidden_dim=8)
+    observed = jnp.zeros_like(batch.y, dtype=bool)
+
+    outputs = run_nonlinear_structured_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        observation="x_sine",
+        y_observed=observed,
+    )
+    expected_var = params.p0 + params.q * jnp.arange(1, config.time_steps + 1)
+
+    assert jnp.allclose(outputs.filter_mean, params.m0)
+    assert jnp.allclose(outputs.filter_var, expected_var[None, :])
 
 
 def test_nonlinear_structured_mlp_teacher_forced_outputs_positive_variances() -> None:

@@ -25,6 +25,7 @@ from vbf.models.cells import (
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
+    make_y_observed_mask,
     make_nonlinear_batch,
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
@@ -32,6 +33,7 @@ from vbf.nonlinear import (
     nonlinear_structured_mlp_step,
     run_nonlinear_structured_mlp_filter,
     run_nonlinear_structured_mlp_teacher_forced,
+    transition_prediction_outputs,
 )
 from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
 from vbf.predictive import previous_filter_beliefs
@@ -82,6 +84,10 @@ def main() -> None:
     teacher_forced = bool(training_config.get("teacher_forced", False))
     resample_batch = bool(training_config.get("resample_batch", False))
     batch_seed_stride = int(training_config.get("batch_seed_stride", 1))
+    mask_y_probability = float(training_config.get("mask_y_probability", 0.0))
+    mask_y_span_probability = float(training_config.get("mask_y_span_probability", 0.0))
+    mask_y_span_length = int(training_config.get("mask_y_span_length", 1))
+    mask_y_seed_offset = int(training_config.get("mask_y_seed_offset", 70_000))
     uses_reference_calibration = (
         reference_mean_weight != 0.0
         or reference_rollout_weight != 0.0
@@ -102,8 +108,24 @@ def main() -> None:
         raise ValueError("predictive_y_num_samples must be positive")
     if predictive_y_estimator != "quadrature":
         raise ValueError("Only predictive_y_estimator='quadrature' is supported")
+    if not 0.0 <= mask_y_probability <= 1.0:
+        raise ValueError("mask_y_probability must be in [0, 1]")
+    if not 0.0 <= mask_y_span_probability <= 1.0:
+        raise ValueError("mask_y_span_probability must be in [0, 1]")
+    if mask_y_span_length <= 0:
+        raise ValueError("mask_y_span_length must be positive")
+    uses_y_mask = mask_y_probability != 0.0 or mask_y_span_probability != 0.0
+    if teacher_forced and uses_y_mask:
+        raise ValueError("masked-y training is not supported with teacher_forced")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
+    train_y_observed = _make_y_observed_mask(
+        data_config,
+        seed=int(config["seed"]) + mask_y_seed_offset,
+        probability=mask_y_probability,
+        span_probability=mask_y_span_probability,
+        span_length=mask_y_span_length,
+    )
     train_reference = None
     train_cached = None
     if uses_reference_calibration:
@@ -137,6 +159,13 @@ def main() -> None:
         state_params,
         seed=eval_seed,
     )
+    eval_y_observed = _make_y_observed_mask(
+        eval_data_config,
+        seed=eval_seed + mask_y_seed_offset,
+        probability=mask_y_probability,
+        span_probability=mask_y_span_probability,
+        span_length=mask_y_span_length,
+    )
 
     params = _init_model_params(
         str(config["model"]),
@@ -150,6 +179,7 @@ def main() -> None:
         batch_x: jax.Array,
         batch_y: jax.Array,
         batch_z: jax.Array,
+        y_observed: jax.Array,
         key: jax.Array,
     ) -> jax.Array:
         batch = EpisodeBatch(x=batch_x, y=batch_y, z=batch_z)
@@ -172,6 +202,7 @@ def main() -> None:
                 state_params,
                 observation=data_config.observation,
                 min_var=min_var,
+                y_observed=y_observed,
             )
         )
         loss = jnp.asarray(0.0, dtype=batch_x.dtype)
@@ -263,11 +294,23 @@ def main() -> None:
             if resample_batch
             else train_batch
         )
+        step_y_observed = (
+            _make_y_observed_mask(
+                data_config,
+                seed=int(config["seed"]) + mask_y_seed_offset + batch_seed_stride * step,
+                probability=mask_y_probability,
+                span_probability=mask_y_span_probability,
+                span_length=mask_y_span_length,
+            )
+            if resample_batch
+            else train_y_observed
+        )
         loss_value, grads = value_and_grad(
             params,
             step_batch.x,
             step_batch.y,
             step_batch.z,
+            step_y_observed,
             step_key,
         )
         params, opt_state = adam_update(
@@ -285,6 +328,7 @@ def main() -> None:
             train_batch.x,
             train_batch.y,
             train_batch.z,
+            train_y_observed,
             jax.random.PRNGKey(int(config["seed"]) + 3),
         )
     )
@@ -295,6 +339,7 @@ def main() -> None:
         state_params,
         observation=eval_data_config.observation,
         min_var=min_var,
+        y_observed=eval_y_observed,
     )
     eval_cached = load_or_compute_nonlinear_reference(
         eval_data_config,
@@ -374,6 +419,12 @@ def main() -> None:
         "teacher_forced": teacher_forced,
         "resample_batch": resample_batch,
         "batch_seed_stride": batch_seed_stride,
+        "mask_y_probability": mask_y_probability,
+        "mask_y_span_probability": mask_y_span_probability,
+        "mask_y_span_length": mask_y_span_length,
+        "mask_y_seed_offset": mask_y_seed_offset,
+        "train_y_observed_fraction": float(jnp.mean(train_y_observed.astype(jnp.float64))),
+        "eval_y_observed_fraction": float(jnp.mean(eval_y_observed.astype(jnp.float64))),
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
         "reference_time_variance_ratio_weight": reference_time_variance_ratio_weight,
         "reference_log_variance_weight": reference_log_variance_weight,
@@ -465,6 +516,7 @@ def main() -> None:
         learned_predictive_var=np.asarray(learned_predictive_var),
         reference_predictive_mean=np.asarray(reference.predictive_mean),
         reference_predictive_var=np.asarray(reference.predictive_var),
+        y_observed_mask=np.asarray(eval_y_observed),
         loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
         loss_history_loss=np.asarray([loss for _, loss in history], dtype=np.float64),
     )
@@ -497,6 +549,7 @@ def _run_model_filter(
     *,
     observation: str,
     min_var: float,
+    y_observed: jax.Array | None = None,
 ):
     if model == "structured_elbo_sine_mlp":
         return run_nonlinear_structured_mlp_filter(
@@ -505,8 +558,69 @@ def _run_model_filter(
             state_params,
             observation=observation,
             min_var=min_var,
+            y_observed=y_observed,
         )
-    return run_direct_mlp_filter(params, batch, state_params, min_var=min_var)
+    return _run_direct_mlp_filter(
+        params,
+        batch,
+        state_params,
+        min_var=min_var,
+        y_observed=y_observed,
+    )
+
+
+def _run_direct_mlp_filter(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float,
+    y_observed: jax.Array | None,
+):
+    if y_observed is None:
+        return run_direct_mlp_filter(params, batch, state_params, min_var=min_var)
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+    observed_bt = y_observed.T
+
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array, jax.Array]):
+        prev_mean, prev_var = carry
+        x_t, y_t, observed_t = obs
+        update_outputs = direct_mlp_step(
+            params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            min_var=min_var,
+        )
+        transition_outputs = transition_prediction_outputs(prev_mean, prev_var, state_params)
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
+        return (outputs.filter_mean, outputs.filter_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
+    return type(outputs)(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def _where_outputs(condition, true_outputs, false_outputs):
+    condition = condition.astype(bool)
+    return type(true_outputs)(
+        *(
+            jnp.where(condition, true_value, false_value)
+            for true_value, false_value in zip(true_outputs, false_outputs, strict=True)
+        )
+    )
+
+
+def _time_major_to_batch_major(value: jax.Array) -> jax.Array:
+    return jnp.swapaxes(value, 0, 1)
 
 
 def _run_model_teacher_forced(
@@ -613,6 +727,24 @@ def _reference_rollout_moment_loss(
             prev_mean = outputs.filter_mean[:, :-1]
             prev_var = outputs.filter_var[:, :-1]
     return loss / terms
+
+
+def _make_y_observed_mask(
+    data_config: NonlinearDataConfig,
+    *,
+    seed: int,
+    probability: float,
+    span_probability: float,
+    span_length: int,
+) -> jax.Array:
+    return make_y_observed_mask(
+        batch_size=data_config.batch_size,
+        time_steps=data_config.time_steps,
+        probability=probability,
+        span_probability=span_probability,
+        span_length=span_length,
+        seed=seed,
+    )
 
 
 def _nonlinear_edge_elbo(

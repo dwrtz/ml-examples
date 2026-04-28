@@ -44,12 +44,17 @@ def main() -> None:
     predictive_path = plot_dir / f"predictive_episode_{episode}.png"
     time_metrics_path = plot_dir / "time_metrics.csv"
     time_calibration_path = plot_dir / "time_calibration.png"
+    gap_metrics_path = plot_dir / "gap_recovery.csv"
+    gap_plot_path = plot_dir / "gap_recovery.png"
     time_metrics = _time_metrics(diagnostics)
+    gap_metrics = _gap_recovery_metrics(diagnostics)
     _plot_posterior_episode(diagnostics, episode, posterior_path)
     _plot_variance_over_time(diagnostics, variance_path)
     _plot_predictive_episode(diagnostics, episode, predictive_path)
     _write_time_metrics(time_metrics_path, time_metrics)
     _plot_time_calibration(time_metrics, time_calibration_path)
+    _write_time_metrics(gap_metrics_path, gap_metrics)
+    _plot_gap_recovery(gap_metrics, gap_plot_path)
     shape_metrics_path = None
     shape_plot_path = None
     config_path = run_dir / "config.yaml"
@@ -64,6 +69,8 @@ def main() -> None:
     print(f"Wrote {predictive_path}")
     print(f"Wrote {time_metrics_path}")
     print(f"Wrote {time_calibration_path}")
+    print(f"Wrote {gap_metrics_path}")
+    print(f"Wrote {gap_plot_path}")
     if shape_metrics_path is not None and shape_plot_path is not None:
         print(f"Wrote {shape_metrics_path}")
         print(f"Wrote {shape_plot_path}")
@@ -204,6 +211,66 @@ def _time_metrics(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     }
 
 
+def _gap_recovery_metrics(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    observed = data.get("y_observed_mask")
+    if observed is None:
+        observed = np.ones_like(data["y"], dtype=bool)
+    observed = observed.astype(bool)
+    gap_age = _gap_age(observed)
+    learned_state_nll = _scalar_gaussian_nll(
+        data["z"],
+        data["learned_filter_mean"],
+        data["learned_filter_var"],
+    )
+    learned_coverage = (
+        np.abs(data["z"] - data["learned_filter_mean"])
+        <= 1.6448536269514722 * np.sqrt(data["learned_filter_var"])
+    )
+    learned_predictive_nll = _scalar_gaussian_nll(
+        data["y"],
+        data["learned_predictive_mean"],
+        data["learned_predictive_var"],
+    )
+    variance_ratio = data["learned_filter_var"] / np.maximum(data["reference_filter_var"], 1e-12)
+    ages = np.arange(int(np.max(gap_age)) + 1)
+    return {
+        "time": ages,
+        "gap_age": ages,
+        "count": np.asarray([np.sum(gap_age == age) for age in ages], dtype=float),
+        "gap_state_nll": np.asarray(
+            [_masked_mean(learned_state_nll, gap_age == age) for age in ages],
+            dtype=float,
+        ),
+        "gap_coverage_90": np.asarray(
+            [_masked_mean(learned_coverage.astype(float), gap_age == age) for age in ages],
+            dtype=float,
+        ),
+        "gap_variance_ratio": np.asarray(
+            [_masked_mean(variance_ratio, gap_age == age) for age in ages],
+            dtype=float,
+        ),
+        "gap_predictive_nll": np.asarray(
+            [_masked_mean(learned_predictive_nll, gap_age == age) for age in ages],
+            dtype=float,
+        ),
+    }
+
+
+def _gap_age(observed: np.ndarray) -> np.ndarray:
+    ages = np.zeros_like(observed, dtype=np.int64)
+    running = np.zeros((observed.shape[0],), dtype=np.int64)
+    for time_index in range(observed.shape[1]):
+        running = np.where(observed[:, time_index], 0, running + 1)
+        ages[:, time_index] = running
+    return ages
+
+
+def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
+    if not np.any(mask):
+        return float("nan")
+    return float(np.mean(values[mask]))
+
+
 def _write_time_metrics(path: Path, metrics: dict[str, np.ndarray]) -> None:
     fieldnames = list(metrics)
     with path.open("w", newline="", encoding="utf-8") as stream:
@@ -211,6 +278,35 @@ def _write_time_metrics(path: Path, metrics: dict[str, np.ndarray]) -> None:
         writer.writeheader()
         for index in range(len(metrics["time"])):
             writer.writerow({field: float(metrics[field][index]) for field in fieldnames})
+
+
+def _plot_gap_recovery(metrics: dict[str, np.ndarray], path: Path) -> None:
+    age = metrics["gap_age"]
+    fig, axes = plt.subplots(5, 1, figsize=(10, 12), sharex=True, constrained_layout=True)
+
+    axes[0].plot(age, metrics["gap_state_nll"], marker="o", color="tab:purple")
+    axes[0].set_ylabel("state NLL")
+    axes[0].set_title("Recovery by masked-measurement gap age")
+
+    axes[1].plot(age, metrics["gap_coverage_90"], marker="o", color="tab:green")
+    axes[1].axhline(0.9, color="black", linestyle="--", linewidth=1.0)
+    axes[1].set_ylabel("coverage 90")
+
+    axes[2].plot(age, metrics["gap_variance_ratio"], marker="o", color="tab:orange")
+    axes[2].axhline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[2].set_ylabel("var ratio")
+
+    axes[3].plot(age, metrics["gap_predictive_nll"], marker="o", color="tab:red")
+    axes[3].set_ylabel("pred NLL")
+
+    axes[4].bar(age, metrics["count"], color="tab:blue", alpha=0.75)
+    axes[4].set_ylabel("count")
+    axes[4].set_xlabel("gap age")
+
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 def _plot_time_calibration(metrics: dict[str, np.ndarray], path: Path) -> None:
