@@ -44,6 +44,15 @@ CALIBRATION_LABELS = {
     "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, and masked-y spans h4": (
         "joint-h4+pred-y+masked-h4"
     ),
+    "EKF-residualized nonlinear MC ELBO + joint h4 w0.05, predictive-y, and masked-y spans h4": (
+        "joint-h4-w0.05+pred-y+masked-h4"
+    ),
+    "EKF-residualized nonlinear MC ELBO + joint h4 w0.1, predictive-y, and masked-y spans h4": (
+        "joint-h4-w0.1+pred-y+masked-h4"
+    ),
+    "EKF-residualized nonlinear MC ELBO + joint h4 w0.3, predictive-y, and masked-y spans h4": (
+        "joint-h4-w0.3+pred-y+masked-h4"
+    ),
     "EKF-residualized nonlinear MC ELBO + masked-y spans h8": "masked-h8",
     "direct nonlinear MLP + reference moment and variance-ratio calibration": "direct-cal",
     "direct nonlinear MLP + reference moment and time variance calibration": "direct-time",
@@ -257,19 +266,22 @@ def _series_rank(calibration: str) -> int:
         "masked-h4": 14,
         "pred-y+masked-h4": 15,
         "joint-h4+pred-y+masked-h4": 16,
-        "masked-h8": 17,
-        "direct-cal": 18,
-        "direct-time": 19,
-        "direct-low": 20,
-        "moment-tf": 21,
-        "direct-tf": 22,
-        "rollout-h2": 23,
-        "rollout-h4": 24,
-        "rollout-h8": 25,
-        "global": 26,
-        "time": 27,
-        "log-var": 28,
-        "low-obs": 29,
+        "joint-h4-w0.05+pred-y+masked-h4": 17,
+        "joint-h4-w0.1+pred-y+masked-h4": 18,
+        "joint-h4-w0.3+pred-y+masked-h4": 19,
+        "masked-h8": 20,
+        "direct-cal": 21,
+        "direct-time": 22,
+        "direct-low": 23,
+        "moment-tf": 24,
+        "direct-tf": 25,
+        "rollout-h2": 26,
+        "rollout-h4": 27,
+        "rollout-h8": 28,
+        "global": 29,
+        "time": 30,
+        "log-var": 31,
+        "low-obs": 32,
     }
     return order.get(calibration, 100)
 

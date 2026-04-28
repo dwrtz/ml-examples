@@ -338,7 +338,7 @@ def _selected_model_specs(
         "structured_joint_elbo_h4_predictive_y_masked_y_spans_h4": ModelSpec(
             key="structured_joint_elbo_h4_predictive_y_masked_y_spans_h4",
             label=(
-                "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, "
+                "EKF-residualized nonlinear MC ELBO + joint h4 w0.3, predictive-y, "
                 "and masked-y spans h4"
             ),
             objective="structured_elbo_sine_mlp",
@@ -352,7 +352,7 @@ def _selected_model_specs(
         "structured_joint_elbo_h4_w01_predictive_y_masked_y_spans_h4": ModelSpec(
             key="structured_joint_elbo_h4_w01_predictive_y_masked_y_spans_h4",
             label=(
-                "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, "
+                "EKF-residualized nonlinear MC ELBO + joint h4 w0.1, predictive-y, "
                 "and masked-y spans h4"
             ),
             objective="structured_elbo_sine_mlp",
@@ -366,7 +366,7 @@ def _selected_model_specs(
         "structured_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4": ModelSpec(
             key="structured_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4",
             label=(
-                "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, "
+                "EKF-residualized nonlinear MC ELBO + joint h4 w0.05, predictive-y, "
                 "and masked-y spans h4"
             ),
             objective="structured_elbo_sine_mlp",
