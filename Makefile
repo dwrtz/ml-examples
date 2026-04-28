@@ -52,6 +52,8 @@ ELBO_CALIBRATION_WEIGHTS ?= 0,0.1,1
 ELBO_CALIBRATION_PENALTIES ?= time,low_observation
 WEAK_OBSERVABILITY_CANONICAL_DIR ?= outputs/linear_gaussian_weak_observability_canonical
 LINEAR_GAUSSIAN_FINAL_REPORT_DIR ?= outputs/linear_gaussian_final_report
+NONLINEAR_UNSUPERVISED_FINAL_REPORT_DIR ?= outputs/nonlinear_unsupervised_objective_final_report
+NONLINEAR_UNSUPERVISED_FINAL_REPORT_METRICS ?= outputs/nonlinear_unsupervised_predictive_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_masked_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_elbo_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_predictive_masked_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_weight_sweep_1000/metrics.csv,outputs/nonlinear_unsupervised_objective_robustness_full_1000/metrics.csv,outputs/nonlinear_head_seed_sweep_1000/metrics.csv
 QR_GENERALIZATION_DIR ?= outputs/linear_gaussian_qr_generalization
 QR_GENERALIZATION_MODELS ?= frozen,self_fed_calibrated,elbo_calibrated
 QR_GENERALIZATION_TRAIN_PAIRS ?= 0.1:0.1
@@ -65,7 +67,7 @@ RANDOM_QR_CALIBRATION_DIR ?= outputs/linear_gaussian_random_qr_calibration
 RANDOM_QR_CALIBRATION_WEIGHTS ?= 0,0.1,1
 RANDOM_QR_CANONICAL_DIR ?= outputs/linear_gaussian_random_qr_generalization_canonical
 
-.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo plot-nonlinear plot-nonlinear-sweep compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
+.PHONY: help setup lock test lint format check train-linear train-linear-elbo evaluate-linear plot-linear plot-linear-elbo plot-nonlinear plot-nonlinear-sweep compare-linear sweep-linear sweep-elbo-ablation sweep-edge-regularizer sweep-transition-consistency sweep-diagnostic-baselines sweep-objective-budget train-predictive-head sweep-predictive-head sweep-self-fed-supervised sweep-self-fed-variance sweep-weak-observability sweep-elbo-calibration aggregate-weak-observability aggregate-linear-gaussian-final-report aggregate-nonlinear-unsupervised-objective-report aggregate-linear-gaussian-reports sweep-qr-generalization sweep-random-qr-generalization sweep-random-qr-calibration aggregate-random-qr-generalization train-nonlinear evaluate-nonlinear sweep-nonlinear-reference sweep-nonlinear-learned clean
 
 help:
 	@printf "Targets:\n"
@@ -97,6 +99,7 @@ help:
 	@printf "  sweep-elbo-calibration Run targeted ELBO calibration sweep\n"
 	@printf "  aggregate-weak-observability Merge split weak-observability summaries\n"
 	@printf "  aggregate-linear-gaussian-final-report Build scalar Gaussian final report\n"
+	@printf "  aggregate-nonlinear-unsupervised-objective-report Build nonlinear unsupervised final report\n"
 	@printf "  aggregate-linear-gaussian-reports Rebuild all scalar Gaussian reports\n"
 	@printf "  sweep-qr-generalization Run fixed-Q/R generalization suite\n"
 	@printf "  sweep-random-qr-generalization Run randomized-Q/R generalization suite\n"
@@ -190,6 +193,9 @@ aggregate-weak-observability:
 
 aggregate-linear-gaussian-final-report:
 	$(UV) run python scripts/aggregate_linear_gaussian_final_report.py --output-dir $(LINEAR_GAUSSIAN_FINAL_REPORT_DIR)
+
+aggregate-nonlinear-unsupervised-objective-report:
+	$(UV) run python scripts/aggregate_nonlinear_unsupervised_objective_report.py --metrics $(NONLINEAR_UNSUPERVISED_FINAL_REPORT_METRICS) --output-dir $(NONLINEAR_UNSUPERVISED_FINAL_REPORT_DIR)
 
 aggregate-linear-gaussian-reports: aggregate-weak-observability aggregate-random-qr-generalization aggregate-linear-gaussian-final-report
 

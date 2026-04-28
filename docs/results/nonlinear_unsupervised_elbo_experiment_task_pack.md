@@ -555,6 +555,22 @@ Replace `BEST_UNSUPERVISED_OBJECTIVE` with the selected model key.
 
 Produce a report-ready summary of the new unsupervised objective branch.
 
+### Status
+
+Completed on 2026-04-28. The report can be regenerated with:
+
+```bash
+make aggregate-nonlinear-unsupervised-objective-report
+```
+
+Current generated artifacts:
+
+```text
+outputs/nonlinear_unsupervised_objective_final_report/summary.md
+outputs/nonlinear_unsupervised_objective_final_report/summary.json
+outputs/nonlinear_unsupervised_objective_final_report/summary.csv
+```
+
 ### Target file
 
 ```text
@@ -591,9 +607,10 @@ outputs/nonlinear_unsupervised_objective_final_report/summary.csv
 
 ### Acceptance criteria
 
-- The report can be regenerated from CSV artifacts.
-- It does not require opening individual run directories manually.
-- It labels each row by training signal.
+- Completed: the report is regenerated from CSV artifacts.
+- Completed: it does not require opening individual run directories manually.
+- Completed: it labels each row by training signal, inferring the label for older diagnostic CSVs
+  that predate the `training_signal` column.
 
 ## Suggested implementation order
 
