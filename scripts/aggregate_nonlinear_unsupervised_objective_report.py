@@ -46,8 +46,16 @@ MODEL_LABELS = {
     DIRECT_DISTILL: "direct reference moment distillation",
     ROLLOUT_DISTILL: "structured h4 reference rollout distillation",
     "direct nonlinear K2 mixture local ADF projection": "direct K2 local ADF projection",
+    "direct nonlinear K2 mixture local ADF projection w0.1": "direct K2 local ADF w0.1",
+    "direct nonlinear K2 mixture local ADF projection w0.3": "direct K2 local ADF w0.3",
     "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection": (
         "direct K2 IWAE h4 k16 + local ADF projection"
+    ),
+    "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.1": (
+        "direct K2 IWAE h4 k16 + local ADF w0.1"
+    ),
+    "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.3": (
+        "direct K2 IWAE h4 k16 + local ADF w0.3"
     ),
     "direct nonlinear local ADF projection": "direct local ADF projection",
 }
@@ -423,7 +431,11 @@ def _selected_pilot_rows(rows: list[AggregateRow]) -> list[AggregateRow]:
             "EKF-residualized nonlinear MC ELBO + joint h4 and predictive-y",
             "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, and masked-y spans h4",
             "direct nonlinear K2 mixture local ADF projection",
+            "direct nonlinear K2 mixture local ADF projection w0.1",
+            "direct nonlinear K2 mixture local ADF projection w0.3",
             "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection",
+            "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.1",
+            "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.3",
             "direct nonlinear local ADF projection",
             PROMOTED_MODEL,
         }

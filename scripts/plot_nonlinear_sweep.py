@@ -69,8 +69,16 @@ CALIBRATION_LABELS = {
     "direct nonlinear MC ELBO": "direct",
     "direct nonlinear MC ELBO + reference variance calibration": "direct-global",
     "direct nonlinear K2 mixture local ADF projection": "direct-k2-adf",
+    "direct nonlinear K2 mixture local ADF projection w0.1": "direct-k2-adf-w0.1",
+    "direct nonlinear K2 mixture local ADF projection w0.3": "direct-k2-adf-w0.3",
     "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection": (
         "direct-k2-iwae-k16+adf"
+    ),
+    "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.1": (
+        "direct-k2-iwae-k16+adf-w0.1"
+    ),
+    "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.3": (
+        "direct-k2-iwae-k16+adf-w0.3"
     ),
     "direct nonlinear local ADF projection": "direct-adf",
 }
