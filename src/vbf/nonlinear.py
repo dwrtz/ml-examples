@@ -446,6 +446,7 @@ def nonlinear_tilted_projection_loss(
     *,
     observation: str = "x_sine",
     num_points: int = 32,
+    likelihood_power: float = 1.0,
     min_var: float = 1e-6,
     stop_target: bool = True,
 ) -> jax.Array:
@@ -463,12 +464,15 @@ def nonlinear_tilted_projection_loss(
         raise ValueError(f"Unsupported nonlinear projection observation: {observation}")
     if num_points <= 0:
         raise ValueError("num_points must be positive")
+    if likelihood_power <= 0.0:
+        raise ValueError("likelihood_power must be positive")
     if isinstance(outputs, GaussianMixtureMLPOutputs):
         return _mixture_tilted_projection_loss(
             outputs,
             batch,
             params,
             num_points=num_points,
+            likelihood_power=likelihood_power,
             min_var=min_var,
             stop_target=stop_target,
         )
@@ -477,6 +481,7 @@ def nonlinear_tilted_projection_loss(
         batch,
         params,
         num_points=num_points,
+        likelihood_power=likelihood_power,
         min_var=min_var,
         stop_target=stop_target,
     )
@@ -773,6 +778,7 @@ def _gaussian_tilted_projection_loss(
     params: LinearGaussianParams,
     *,
     num_points: int,
+    likelihood_power: float,
     min_var: float,
     stop_target: bool,
 ) -> jax.Array:
@@ -789,7 +795,7 @@ def _gaussian_tilted_projection_loss(
         batch.x[..., None] * jnp.sin(z),
         params.r,
     )
-    log_target_weights = log_weights + log_likelihood
+    log_target_weights = log_weights + likelihood_power * log_likelihood
     log_target_weights = log_target_weights - jsp.special.logsumexp(
         log_target_weights,
         axis=-1,
@@ -810,6 +816,7 @@ def _mixture_tilted_projection_loss(
     params: LinearGaussianParams,
     *,
     num_points: int,
+    likelihood_power: float,
     min_var: float,
     stop_target: bool,
 ) -> jax.Array:
@@ -822,7 +829,9 @@ def _mixture_tilted_projection_loss(
         batch.x[..., None, None] * jnp.sin(z),
         params.r,
     )
-    log_target_weights = jnp.log(prev_weights[..., None]) + log_weights + log_likelihood
+    log_target_weights = (
+        jnp.log(prev_weights[..., None]) + log_weights + likelihood_power * log_likelihood
+    )
     log_target_weights = log_target_weights - jsp.special.logsumexp(
         log_target_weights,
         axis=(-2, -1),

@@ -250,6 +250,7 @@ def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
         state_params,
         observation="x_sine",
         num_points=8,
+        likelihood_power=0.5,
     )
 
     assert gaussian_loss.shape == batch.y.shape

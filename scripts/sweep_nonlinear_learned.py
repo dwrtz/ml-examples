@@ -54,6 +54,7 @@ class ModelSpec:
     predictive_y_estimator: str = "quadrature"
     local_projection_weight: float = 0.0
     local_projection_num_points: int = 32
+    local_projection_likelihood_power: float = 1.0
     local_projection_stop_target: bool = True
     mask_y_probability: float = 0.0
     mask_y_span_probability: float = 0.0
@@ -696,6 +697,42 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k2_local_projection_beta_0p3": ModelSpec(
+            key="direct_mixture_k2_local_projection_beta_0p3",
+            label="direct nonlinear K2 mixture local ADF projection beta 0.3",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.3,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_local_projection_beta_0p5": ModelSpec(
+            key="direct_mixture_k2_local_projection_beta_0p5",
+            label="direct nonlinear K2 mixture local ADF projection beta 0.5",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.5,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_local_projection_beta_0p7": ModelSpec(
+            key="direct_mixture_k2_local_projection_beta_0p7",
+            label="direct nonlinear K2 mixture local ADF projection beta 0.7",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.7,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
         "direct_mixture_k2_hybrid_iwae_projection_h4_k16": ModelSpec(
             key="direct_mixture_k2_hybrid_iwae_projection_h4_k16",
             label="direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection",
@@ -927,6 +964,7 @@ def _make_train_config(
         "predictive_y_estimator": spec.predictive_y_estimator,
         "local_projection_weight": spec.local_projection_weight,
         "local_projection_num_points": spec.local_projection_num_points,
+        "local_projection_likelihood_power": spec.local_projection_likelihood_power,
         "local_projection_stop_target": spec.local_projection_stop_target,
         "mask_y_probability": spec.mask_y_probability,
         "mask_y_span_probability": spec.mask_y_span_probability,
@@ -1004,6 +1042,9 @@ def _load_row(
         "predictive_y_estimator": metrics["predictive_y_estimator"],
         "local_projection_weight": metrics.get("local_projection_weight", 0.0),
         "local_projection_num_points": metrics.get("local_projection_num_points", 32),
+        "local_projection_likelihood_power": metrics.get(
+            "local_projection_likelihood_power", 1.0
+        ),
         "local_projection_stop_target": metrics.get("local_projection_stop_target", True),
         "state_nll_estimator": metrics.get("state_nll_estimator", "gaussian"),
         "coverage_estimator": metrics.get("coverage_estimator", "moment_gaussian"),
@@ -1072,6 +1113,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "predictive_y_estimator",
         "local_projection_weight",
         "local_projection_num_points",
+        "local_projection_likelihood_power",
         "local_projection_stop_target",
         "state_nll_estimator",
         "coverage_estimator",

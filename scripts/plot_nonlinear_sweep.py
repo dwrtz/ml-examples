@@ -71,6 +71,9 @@ CALIBRATION_LABELS = {
     "direct nonlinear K2 mixture local ADF projection": "direct-k2-adf",
     "direct nonlinear K2 mixture local ADF projection w0.1": "direct-k2-adf-w0.1",
     "direct nonlinear K2 mixture local ADF projection w0.3": "direct-k2-adf-w0.3",
+    "direct nonlinear K2 mixture local ADF projection beta 0.3": "direct-k2-adf-b0.3",
+    "direct nonlinear K2 mixture local ADF projection beta 0.5": "direct-k2-adf-b0.5",
+    "direct nonlinear K2 mixture local ADF projection beta 0.7": "direct-k2-adf-b0.7",
     "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection": (
         "direct-k2-iwae-k16+adf"
     ),
