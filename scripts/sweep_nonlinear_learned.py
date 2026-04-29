@@ -791,6 +791,44 @@ def _selected_model_specs(
             mixture_components=4,
             mixture_component_mean_init_span=6.283185307179586,
         ),
+        "direct_mixture_k4_local_projection_beta_0p3_spread_2pi_predictive_y_w005": ModelSpec(
+            key="direct_mixture_k4_local_projection_beta_0p3_spread_2pi_predictive_y_w005",
+            label=(
+                "direct nonlinear K4 mixture local ADF projection beta 0.3 "
+                "spread 2pi + predictive-y w0.05"
+            ),
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.3,
+            predictive_y_weight=0.05,
+            posterior_family="gaussian_mixture",
+            mixture_components=4,
+            mixture_component_mean_init_span=6.283185307179586,
+        ),
+        "direct_mixture_k4_local_projection_beta_0p3_spread_2pi_predictive_y_w01_late": (
+            ModelSpec(
+                key="direct_mixture_k4_local_projection_beta_0p3_spread_2pi_predictive_y_w01_late",
+                label=(
+                    "direct nonlinear K4 mixture local ADF projection beta 0.3 "
+                    "spread 2pi + late predictive-y w0.1"
+                ),
+                objective="direct_elbo_sine_mlp",
+                reference_variance_ratio_weight=0.0,
+                elbo_weight=0.0,
+                local_projection_weight=1.0,
+                local_projection_num_points=32,
+                local_projection_likelihood_power=0.3,
+                predictive_y_weight=0.1,
+                predictive_y_start_fraction=0.5,
+                predictive_y_ramp_fraction=0.25,
+                posterior_family="gaussian_mixture",
+                mixture_components=4,
+                mixture_component_mean_init_span=6.283185307179586,
+            )
+        ),
         "direct_mixture_k2_local_projection_beta_0p5": ModelSpec(
             key="direct_mixture_k2_local_projection_beta_0p5",
             label="direct nonlinear K2 mixture local ADF projection beta 0.5",

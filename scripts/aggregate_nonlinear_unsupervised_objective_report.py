@@ -53,6 +53,12 @@ MODEL_LABELS = {
     "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi": (
         "direct K4 local ADF beta 0.3 spread 2pi"
     ),
+    "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi + predictive-y w0.05": (
+        "direct K4 local ADF beta 0.3 spread 2pi + pred-y w0.05"
+    ),
+    "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi + late predictive-y w0.1": (
+        "direct K4 local ADF beta 0.3 spread 2pi + late pred-y w0.1"
+    ),
     "direct nonlinear K2 mixture local ADF projection beta 0.5": "direct K2 local ADF beta 0.5",
     "direct nonlinear K2 mixture local ADF projection beta 0.7": "direct K2 local ADF beta 0.7",
     "direct nonlinear K2 mixture local alpha 0.5": "direct K2 local alpha 0.5",
@@ -449,6 +455,8 @@ def _selected_pilot_rows(rows: list[AggregateRow]) -> list[AggregateRow]:
             "direct nonlinear K2 mixture local ADF projection beta 0.3",
             "direct nonlinear K4 mixture local ADF projection beta 0.3",
             "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi",
+            "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi + predictive-y w0.05",
+            "direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi + late predictive-y w0.1",
             "direct nonlinear K2 mixture local ADF projection beta 0.5",
             "direct nonlinear K2 mixture local ADF projection beta 0.7",
             "direct nonlinear K2 mixture local alpha 0.5",
