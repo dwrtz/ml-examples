@@ -104,6 +104,10 @@ def main() -> None:
     local_projection_likelihood_power = float(
         training_config.get("local_projection_likelihood_power", 1.0)
     )
+    local_projection_divergence = str(
+        training_config.get("local_projection_divergence", "forward_kl")
+    )
+    local_projection_alpha = float(training_config.get("local_projection_alpha", 0.5))
     local_projection_stop_target = bool(training_config.get("local_projection_stop_target", True))
     reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
     reference_rollout_weight = float(training_config.get("reference_rollout_weight", 0.0))
@@ -162,6 +166,10 @@ def main() -> None:
         raise ValueError("local_projection_num_points must be positive")
     if local_projection_likelihood_power <= 0.0:
         raise ValueError("local_projection_likelihood_power must be positive")
+    if local_projection_divergence not in {"forward_kl", "alpha"}:
+        raise ValueError("local_projection_divergence must be one of: forward_kl, alpha")
+    if not 0.0 < local_projection_alpha < 1.0:
+        raise ValueError("local_projection_alpha must be in (0, 1)")
     if not 0.0 <= predictive_y_start_fraction <= 1.0:
         raise ValueError("predictive_y_start_fraction must be in [0, 1]")
     if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
@@ -390,6 +398,8 @@ def main() -> None:
                 observation=data_config.observation,
                 num_points=local_projection_num_points,
                 likelihood_power=local_projection_likelihood_power,
+                divergence=local_projection_divergence,
+                alpha=local_projection_alpha,
                 min_var=min_var,
                 stop_target=local_projection_stop_target,
             )
@@ -609,6 +619,8 @@ def main() -> None:
         "local_projection_weight": local_projection_weight,
         "local_projection_num_points": local_projection_num_points,
         "local_projection_likelihood_power": local_projection_likelihood_power,
+        "local_projection_divergence": local_projection_divergence,
+        "local_projection_alpha": local_projection_alpha,
         "local_projection_stop_target": local_projection_stop_target,
         "state_nll_estimator": "mixture_density" if _is_mixture_outputs(outputs) else "gaussian",
         "coverage_estimator": "moment_gaussian",

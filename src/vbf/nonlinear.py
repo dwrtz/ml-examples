@@ -553,6 +553,8 @@ def nonlinear_tilted_projection_loss(
     observation: str = "x_sine",
     num_points: int = 32,
     likelihood_power: float = 1.0,
+    divergence: str = "forward_kl",
+    alpha: float = 0.5,
     min_var: float = 1e-6,
     stop_target: bool = True,
 ) -> jax.Array:
@@ -572,6 +574,10 @@ def nonlinear_tilted_projection_loss(
         raise ValueError("num_points must be positive")
     if likelihood_power <= 0.0:
         raise ValueError("likelihood_power must be positive")
+    if divergence not in {"forward_kl", "alpha"}:
+        raise ValueError("divergence must be one of: forward_kl, alpha")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
     if isinstance(outputs, GaussianMixtureMLPOutputs):
         return _mixture_tilted_projection_loss(
             outputs,
@@ -579,6 +585,8 @@ def nonlinear_tilted_projection_loss(
             params,
             num_points=num_points,
             likelihood_power=likelihood_power,
+            divergence=divergence,
+            alpha=alpha,
             min_var=min_var,
             stop_target=stop_target,
         )
@@ -588,6 +596,8 @@ def nonlinear_tilted_projection_loss(
         params,
         num_points=num_points,
         likelihood_power=likelihood_power,
+        divergence=divergence,
+        alpha=alpha,
         min_var=min_var,
         stop_target=stop_target,
     )
@@ -885,6 +895,8 @@ def _gaussian_tilted_projection_loss(
     *,
     num_points: int,
     likelihood_power: float,
+    divergence: str,
+    alpha: float,
     min_var: float,
     stop_target: bool,
 ) -> jax.Array:
@@ -901,7 +913,19 @@ def _gaussian_tilted_projection_loss(
         batch.x[..., None] * jnp.sin(z),
         params.r,
     )
-    log_target_weights = log_weights + likelihood_power * log_likelihood
+    log_base_weights = log_weights - 0.5 * jnp.log(jnp.pi)
+    log_target_normalizer = jsp.special.logsumexp(
+        log_base_weights + likelihood_power * log_likelihood,
+        axis=-1,
+        keepdims=True,
+    )
+    log_target_weights = log_base_weights + likelihood_power * log_likelihood
+    log_target_weights = log_target_weights - log_target_normalizer
+    log_target_density = (
+        _normal_log_prob(z, prev_mean[..., None], pred_var[..., None])
+        + likelihood_power * log_likelihood
+        - log_target_normalizer
+    )
     log_target_weights = log_target_weights - jsp.special.logsumexp(
         log_target_weights,
         axis=-1,
@@ -911,9 +935,25 @@ def _gaussian_tilted_projection_loss(
     if stop_target:
         z = jax.lax.stop_gradient(z)
         target_weights = jax.lax.stop_gradient(target_weights)
+        log_target_density = jax.lax.stop_gradient(log_target_density)
+        log_base_weights = jax.lax.stop_gradient(log_base_weights)
+        pred_log_prob = jax.lax.stop_gradient(
+            _normal_log_prob(z, prev_mean[..., None], pred_var[..., None])
+        )
+    else:
+        pred_log_prob = _normal_log_prob(z, prev_mean[..., None], pred_var[..., None])
     filter_var = jnp.maximum(outputs.filter_var, min_var)
     log_q = _normal_log_prob(z, outputs.filter_mean[..., None], filter_var[..., None])
-    return -jnp.sum(target_weights * log_q, axis=-1)
+    if divergence == "forward_kl":
+        return -jnp.sum(target_weights * log_q, axis=-1)
+    log_affinity = jsp.special.logsumexp(
+        log_base_weights
+        + alpha * log_target_density
+        + (1.0 - alpha) * log_q
+        - pred_log_prob,
+        axis=-1,
+    )
+    return -log_affinity / (1.0 - alpha)
 
 
 def _mixture_tilted_projection_loss(
@@ -923,6 +963,8 @@ def _mixture_tilted_projection_loss(
     *,
     num_points: int,
     likelihood_power: float,
+    divergence: str,
+    alpha: float,
     min_var: float,
     stop_target: bool,
 ) -> jax.Array:
@@ -935,8 +977,26 @@ def _mixture_tilted_projection_loss(
         batch.x[..., None, None] * jnp.sin(z),
         params.r,
     )
-    log_target_weights = (
-        jnp.log(prev_weights[..., None]) + log_weights + likelihood_power * log_likelihood
+    log_prev_weights = jnp.log(jnp.clip(prev_weights, min_var))
+    log_pred_density = jsp.special.logsumexp(
+        log_prev_weights[..., None, None, :]
+        + _normal_log_prob(
+            z[..., None],
+            prev_mean[..., None, None, :],
+            pred_var[..., None, None, :],
+        ),
+        axis=-1,
+    )
+    log_base_weights = log_prev_weights[..., None] + log_weights - 0.5 * jnp.log(jnp.pi)
+    log_target_normalizer = jsp.special.logsumexp(
+        log_base_weights + likelihood_power * log_likelihood,
+        axis=(-2, -1),
+        keepdims=True,
+    )
+    log_target_weights = log_base_weights + likelihood_power * log_likelihood
+    log_target_weights = log_target_weights - log_target_normalizer
+    log_target_density = (
+        log_pred_density + likelihood_power * log_likelihood - log_target_normalizer
     )
     log_target_weights = log_target_weights - jsp.special.logsumexp(
         log_target_weights,
@@ -947,6 +1007,9 @@ def _mixture_tilted_projection_loss(
     if stop_target:
         z = jax.lax.stop_gradient(z)
         target_weights = jax.lax.stop_gradient(target_weights)
+        log_base_weights = jax.lax.stop_gradient(log_base_weights)
+        log_target_density = jax.lax.stop_gradient(log_target_density)
+        log_pred_density = jax.lax.stop_gradient(log_pred_density)
 
     output_weights = jnp.maximum(outputs.filter_weights, min_var)
     output_weights = output_weights / jnp.sum(output_weights, axis=-1, keepdims=True)
@@ -960,7 +1023,16 @@ def _mixture_tilted_projection_loss(
         ),
         axis=-1,
     )
-    return -jnp.sum(target_weights * log_q, axis=(-2, -1))
+    if divergence == "forward_kl":
+        return -jnp.sum(target_weights * log_q, axis=(-2, -1))
+    log_affinity = jsp.special.logsumexp(
+        log_base_weights
+        + alpha * log_target_density
+        + (1.0 - alpha) * log_q
+        - log_pred_density,
+        axis=(-2, -1),
+    )
+    return -log_affinity / (1.0 - alpha)
 
 
 def _previous_filter_beliefs(

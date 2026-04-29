@@ -74,6 +74,8 @@ CALIBRATION_LABELS = {
     "direct nonlinear K2 mixture local ADF projection beta 0.3": "direct-k2-adf-b0.3",
     "direct nonlinear K2 mixture local ADF projection beta 0.5": "direct-k2-adf-b0.5",
     "direct nonlinear K2 mixture local ADF projection beta 0.7": "direct-k2-adf-b0.7",
+    "direct nonlinear K2 mixture local alpha 0.5": "direct-k2-alpha-0.5",
+    "direct nonlinear K2 mixture local alpha 0.7": "direct-k2-alpha-0.7",
     "direct nonlinear K2 mixture FIVO n16": "direct-k2-fivo-n16",
     "direct nonlinear K2 mixture FIVO n32": "direct-k2-fivo-n32",
     "direct nonlinear K2 mixture FIVO bridge n16": "direct-k2-fivo-bridge-n16",

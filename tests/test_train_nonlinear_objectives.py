@@ -300,3 +300,17 @@ def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
     assert mixture_loss.shape == batch.y.shape
     assert jnp.all(jnp.isfinite(gaussian_loss))
     assert jnp.all(jnp.isfinite(mixture_loss))
+
+    mixture_alpha_loss = nonlinear_tilted_projection_loss(
+        mixture_outputs,
+        batch,
+        state_params,
+        observation="x_sine",
+        num_points=8,
+        likelihood_power=0.5,
+        divergence="alpha",
+        alpha=0.5,
+    )
+
+    assert mixture_alpha_loss.shape == batch.y.shape
+    assert jnp.all(jnp.isfinite(mixture_alpha_loss))
