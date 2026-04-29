@@ -166,9 +166,17 @@ def main() -> None:
         raise ValueError("predictive_y_start_fraction must be in [0, 1]")
     if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
         raise ValueError("predictive_y_ramp_fraction must be in [0, 1]")
-    if objective_family not in {"elbo", "iwae", "renyi", "local_projection", "fivo"}:
+    if objective_family not in {
+        "elbo",
+        "iwae",
+        "renyi",
+        "local_projection",
+        "fivo",
+        "fivo_bridge",
+    }:
         raise ValueError(
-            "objective_family must be one of: elbo, iwae, renyi, local_projection, fivo"
+            "objective_family must be one of: elbo, iwae, renyi, local_projection, "
+            "fivo, fivo_bridge"
         )
     if num_importance_samples <= 0:
         raise ValueError("num_importance_samples must be positive")
@@ -312,8 +320,13 @@ def main() -> None:
                     joint_key,
                     observation=data_config.observation,
                     num_particles=fivo_num_particles,
+                    proposal_family=(
+                        "transition_filter_bridge"
+                        if objective_family == "fivo_bridge"
+                        else "marginal_filter"
+                    ),
                 )
-                if objective_family == "fivo"
+                if objective_family in {"fivo", "fivo_bridge"}
                 else _nonlinear_windowed_joint_objective(
                     outputs,
                     batch,
@@ -1272,6 +1285,7 @@ def _nonlinear_fivo_objective(
     *,
     observation: str,
     num_particles: int,
+    proposal_family: str = "marginal_filter",
 ) -> jax.Array:
     """Sequential particle-filter marginal likelihood objective."""
 
@@ -1279,6 +1293,10 @@ def _nonlinear_fivo_objective(
         raise ValueError(f"Unsupported FIVO observation: {observation}")
     if num_particles <= 0:
         raise ValueError("num_particles must be positive")
+    if proposal_family not in {"marginal_filter", "transition_filter_bridge"}:
+        raise ValueError(
+            "proposal_family must be one of: marginal_filter, transition_filter_bridge"
+        )
 
     batch_size = batch.x.shape[0]
     init_key, scan_key = jax.random.split(key)
@@ -1302,21 +1320,47 @@ def _nonlinear_fivo_objective(
         prev_z = carry
         if _is_mixture_outputs(outputs):
             x_t, y_t, weights_t, mean_t, var_t, step_key = obs
-            sample_key, resample_key = jax.random.split(step_key)
-            z_t, _ = _sample_mixture_marginal(
-                sample_key,
-                weights_t,
-                mean_t,
-                var_t,
-                sample_shape=(num_particles,),
-            )
-            z_t = jnp.swapaxes(z_t, 0, 1)
-            log_q = _mixture_log_prob(
-                z_t,
-                weights_t[:, None, :],
-                mean_t[:, None, :],
-                var_t[:, None, :],
-            )
+            sample_key, component_key, resample_key = jax.random.split(step_key, 3)
+            if proposal_family == "transition_filter_bridge":
+                bridge_var = 1.0 / (1.0 / state_params.q + 1.0 / var_t[:, None, :])
+                bridge_mean = bridge_var * (
+                    prev_z[:, :, None] / state_params.q + mean_t[:, None, :] / var_t[:, None, :]
+                )
+                bridge_logits = jnp.log(jnp.clip(weights_t[:, None, :], 1e-12)) + _normal_log_prob(
+                    prev_z[:, :, None],
+                    mean_t[:, None, :],
+                    var_t[:, None, :] + state_params.q,
+                )
+                bridge_log_weights = bridge_logits - jax.nn.logsumexp(
+                    bridge_logits,
+                    axis=-1,
+                    keepdims=True,
+                )
+                component = jax.random.categorical(component_key, logits=bridge_logits, axis=-1)
+                selected_mean = _take_component(bridge_mean, component)
+                selected_var = _take_component(bridge_var, component)
+                eps = jax.random.normal(sample_key, shape=prev_z.shape, dtype=batch.x.dtype)
+                z_t = selected_mean + jnp.sqrt(selected_var) * eps
+                log_q = jax.nn.logsumexp(
+                    bridge_log_weights
+                    + _normal_log_prob(z_t[:, :, None], bridge_mean, bridge_var),
+                    axis=-1,
+                )
+            else:
+                z_t, _ = _sample_mixture_marginal(
+                    sample_key,
+                    weights_t,
+                    mean_t,
+                    var_t,
+                    sample_shape=(num_particles,),
+                )
+                z_t = jnp.swapaxes(z_t, 0, 1)
+                log_q = _mixture_log_prob(
+                    z_t,
+                    weights_t[:, None, :],
+                    mean_t[:, None, :],
+                    var_t[:, None, :],
+                )
         else:
             x_t, y_t, mean_t, var_t, step_key = obs
             sample_key, resample_key = jax.random.split(step_key)
@@ -1325,8 +1369,16 @@ def _nonlinear_fivo_objective(
                 shape=(batch_size, num_particles),
                 dtype=batch.x.dtype,
             )
-            z_t = mean_t[:, None] + jnp.sqrt(var_t[:, None]) * eps
-            log_q = _normal_log_prob(z_t, mean_t[:, None], var_t[:, None])
+            if proposal_family == "transition_filter_bridge":
+                bridge_var = 1.0 / (1.0 / state_params.q + 1.0 / var_t[:, None])
+                bridge_mean = bridge_var * (
+                    prev_z / state_params.q + mean_t[:, None] / var_t[:, None]
+                )
+                z_t = bridge_mean + jnp.sqrt(bridge_var) * eps
+                log_q = _normal_log_prob(z_t, bridge_mean, bridge_var)
+            else:
+                z_t = mean_t[:, None] + jnp.sqrt(var_t[:, None]) * eps
+                log_q = _normal_log_prob(z_t, mean_t[:, None], var_t[:, None])
 
         obs_mean = nonlinear_observation_mean(z_t, x_t[:, None], observation)
         log_weights = (
