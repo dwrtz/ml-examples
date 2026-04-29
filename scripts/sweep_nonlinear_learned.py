@@ -77,6 +77,7 @@ class ModelSpec:
     entropy_bonus_weight: float = 0.0
     posterior_family: str = "gaussian"
     mixture_components: int = 1
+    mixture_component_mean_init_span: float = 0.0
 
 
 def main() -> None:
@@ -777,6 +778,19 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=4,
         ),
+        "direct_mixture_k4_local_projection_beta_0p3_spread_2pi": ModelSpec(
+            key="direct_mixture_k4_local_projection_beta_0p3_spread_2pi",
+            label="direct nonlinear K4 mixture local ADF projection beta 0.3 spread 2pi",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.3,
+            posterior_family="gaussian_mixture",
+            mixture_components=4,
+            mixture_component_mean_init_span=6.283185307179586,
+        ),
         "direct_mixture_k2_local_projection_beta_0p5": ModelSpec(
             key="direct_mixture_k2_local_projection_beta_0p5",
             label="direct nonlinear K2 mixture local ADF projection beta 0.5",
@@ -1087,6 +1101,7 @@ def _make_train_config(
         "entropy_bonus_weight": spec.entropy_bonus_weight,
         "posterior_family": spec.posterior_family,
         "mixture_components": spec.mixture_components,
+        "mixture_component_mean_init_span": spec.mixture_component_mean_init_span,
     }
     return config
 
@@ -1130,6 +1145,7 @@ def _load_row(
         "entropy_bonus_weight": metrics["entropy_bonus_weight"],
         "posterior_family": metrics["posterior_family"],
         "mixture_components": metrics["mixture_components"],
+        "mixture_component_mean_init_span": metrics.get("mixture_component_mean_init_span", 0.0),
         "elbo_weight": metrics["elbo_weight"],
         "predictive_y_weight": metrics["predictive_y_weight"],
         "predictive_y_start_fraction": metrics.get("predictive_y_start_fraction", 0.0),
@@ -1205,6 +1221,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "entropy_bonus_weight",
         "posterior_family",
         "mixture_components",
+        "mixture_component_mean_init_span",
         "elbo_weight",
         "predictive_y_weight",
         "predictive_y_start_fraction",

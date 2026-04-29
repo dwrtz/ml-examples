@@ -82,6 +82,9 @@ def main() -> None:
     entropy_bonus_weight = float(training_config.get("entropy_bonus_weight", 0.0))
     posterior_family = str(training_config.get("posterior_family", "gaussian"))
     mixture_components = int(training_config.get("mixture_components", 1))
+    mixture_component_mean_init_span = float(
+        training_config.get("mixture_component_mean_init_span", 0.0)
+    )
     default_elbo_weight = 0.0 if objective_family == "local_projection" else 1.0
     elbo_weight = float(training_config.get("elbo_weight", default_elbo_weight))
     joint_elbo_weight = float(training_config.get("joint_elbo_weight", 0.0))
@@ -198,6 +201,8 @@ def main() -> None:
         raise ValueError("mixture_components must be 1 for posterior_family='gaussian'")
     if posterior_family == "gaussian_mixture" and mixture_components <= 1:
         raise ValueError("gaussian_mixture requires mixture_components > 1")
+    if mixture_component_mean_init_span < 0.0:
+        raise ValueError("mixture_component_mean_init_span must be nonnegative")
     if predictive_y_estimator != "quadrature":
         raise ValueError("Only predictive_y_estimator='quadrature' is supported")
     if not 0.0 <= mask_y_probability <= 1.0:
@@ -265,6 +270,7 @@ def main() -> None:
         hidden_dim=int(training_config["hidden_dim"]),
         posterior_family=posterior_family,
         mixture_components=mixture_components,
+        mixture_component_mean_init_span=mixture_component_mean_init_span,
     )
     opt_state = init_adam(params)
 
@@ -603,6 +609,7 @@ def main() -> None:
         "entropy_bonus_weight": entropy_bonus_weight,
         "posterior_family": posterior_family,
         "mixture_components": mixture_components,
+        "mixture_component_mean_init_span": mixture_component_mean_init_span,
         "elbo_weight": elbo_weight,
         "joint_elbo_weight": joint_elbo_weight,
         "joint_elbo_horizon": joint_elbo_horizon,
@@ -755,6 +762,7 @@ def _init_model_params(
     hidden_dim: int,
     posterior_family: str = "gaussian",
     mixture_components: int = 1,
+    mixture_component_mean_init_span: float = 0.0,
 ) -> dict[str, jax.Array]:
     if posterior_family == "gaussian_mixture":
         init_fn = (
@@ -766,6 +774,7 @@ def _init_model_params(
             key,
             hidden_dim=hidden_dim,
             num_components=mixture_components,
+            component_mean_init_span=mixture_component_mean_init_span,
         )
     if model == "structured_elbo_sine_mlp":
         return init_structured_mlp_params(key, hidden_dim=hidden_dim)

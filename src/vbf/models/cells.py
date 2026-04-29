@@ -107,6 +107,7 @@ def init_direct_mixture_mlp_params(
     hidden_dim: int = 32,
     input_dim: int = 6,
     num_components: int = 2,
+    component_mean_init_span: float = 0.0,
 ) -> dict[str, jax.Array]:
     """Initialize a direct strict Gaussian-mixture filtering MLP."""
 
@@ -115,11 +116,20 @@ def init_direct_mixture_mlp_params(
     key_w1, _ = jax.random.split(key)
     w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
+    b2 = jnp.zeros((num_components, 6), dtype=jnp.float64)
+    if component_mean_init_span != 0.0:
+        component_offsets = jnp.linspace(
+            -0.5 * component_mean_init_span,
+            0.5 * component_mean_init_span,
+            num_components,
+            dtype=jnp.float64,
+        )
+        b2 = b2.at[:, 1].set(component_offsets)
     return {
         "w1": w1,
         "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
         "w2": jnp.zeros((hidden_dim, 6 * num_components), dtype=jnp.float64),
-        "b2": jnp.zeros((6 * num_components,), dtype=jnp.float64),
+        "b2": jnp.reshape(b2, (6 * num_components,)),
     }
 
 
@@ -129,6 +139,7 @@ def init_structured_mixture_mlp_params(
     hidden_dim: int = 32,
     input_dim: int = 6,
     num_components: int = 2,
+    component_mean_init_span: float = 0.0,
 ) -> dict[str, jax.Array]:
     """Initialize an EKF-residualized strict Gaussian-mixture filtering MLP."""
 
@@ -137,6 +148,7 @@ def init_structured_mixture_mlp_params(
         hidden_dim=hidden_dim,
         input_dim=input_dim,
         num_components=num_components,
+        component_mean_init_span=component_mean_init_span,
     )
 
 
