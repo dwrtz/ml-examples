@@ -439,6 +439,49 @@ def nonlinear_preassimilation_log_prob_y(
     return jsp.special.logsumexp(log_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(jnp.pi)
 
 
+def nonlinear_tilted_projection_loss(
+    outputs: StructuredMLPOutputs | GaussianMixtureMLPOutputs,
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    observation: str = "x_sine",
+    num_points: int = 32,
+    min_var: float = 1e-6,
+    stop_target: bool = True,
+) -> jax.Array:
+    """Forward-KL style ADF projection loss from the local tilted posterior.
+
+    The target is generated only from the carried belief, transition model, and
+    current observation:
+
+    `tilde p(z_t) proportional p(y_t | z_t, x_t) int p(z_t | z_tm1) q^F_{t-1}(z_tm1) dz_tm1`.
+
+    The returned array has batch-time shape.
+    """
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported nonlinear projection observation: {observation}")
+    if num_points <= 0:
+        raise ValueError("num_points must be positive")
+    if isinstance(outputs, GaussianMixtureMLPOutputs):
+        return _mixture_tilted_projection_loss(
+            outputs,
+            batch,
+            params,
+            num_points=num_points,
+            min_var=min_var,
+            stop_target=stop_target,
+        )
+    return _gaussian_tilted_projection_loss(
+        outputs,
+        batch,
+        params,
+        num_points=num_points,
+        min_var=min_var,
+        stop_target=stop_target,
+    )
+
+
 def run_nonlinear_structured_mlp_filter(
     mlp_params: dict[str, jax.Array],
     batch: EpisodeBatch,
@@ -722,6 +765,135 @@ def _normal_log_prob(
     value: jax.Array, mean: jax.Array | float, var: jax.Array | float
 ) -> jax.Array:
     return -0.5 * (LOG_2PI + jnp.log(var) + (value - mean) ** 2 / var)
+
+
+def _gaussian_tilted_projection_loss(
+    outputs: StructuredMLPOutputs,
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    num_points: int,
+    min_var: float,
+    stop_target: bool,
+) -> jax.Array:
+    prev_mean, prev_var = _previous_filter_beliefs(
+        outputs.filter_mean,
+        outputs.filter_var,
+        params,
+    )
+    nodes, log_weights = _hermgauss(num_points, outputs.filter_mean.dtype)
+    pred_var = prev_var + params.q
+    z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_var[..., None]) * nodes
+    log_likelihood = _normal_log_prob(
+        batch.y[..., None],
+        batch.x[..., None] * jnp.sin(z),
+        params.r,
+    )
+    log_target_weights = log_weights + log_likelihood
+    log_target_weights = log_target_weights - jsp.special.logsumexp(
+        log_target_weights,
+        axis=-1,
+        keepdims=True,
+    )
+    target_weights = jnp.exp(log_target_weights)
+    if stop_target:
+        z = jax.lax.stop_gradient(z)
+        target_weights = jax.lax.stop_gradient(target_weights)
+    filter_var = jnp.maximum(outputs.filter_var, min_var)
+    log_q = _normal_log_prob(z, outputs.filter_mean[..., None], filter_var[..., None])
+    return -jnp.sum(target_weights * log_q, axis=-1)
+
+
+def _mixture_tilted_projection_loss(
+    outputs: GaussianMixtureMLPOutputs,
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    num_points: int,
+    min_var: float,
+    stop_target: bool,
+) -> jax.Array:
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(outputs, params)
+    nodes, log_weights = _hermgauss(num_points, outputs.component_mean.dtype)
+    pred_var = prev_var + params.q
+    z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_var[..., None]) * nodes
+    log_likelihood = _normal_log_prob(
+        batch.y[..., None, None],
+        batch.x[..., None, None] * jnp.sin(z),
+        params.r,
+    )
+    log_target_weights = jnp.log(prev_weights[..., None]) + log_weights + log_likelihood
+    log_target_weights = log_target_weights - jsp.special.logsumexp(
+        log_target_weights,
+        axis=(-2, -1),
+        keepdims=True,
+    )
+    target_weights = jnp.exp(log_target_weights)
+    if stop_target:
+        z = jax.lax.stop_gradient(z)
+        target_weights = jax.lax.stop_gradient(target_weights)
+
+    output_weights = jnp.maximum(outputs.filter_weights, min_var)
+    output_weights = output_weights / jnp.sum(output_weights, axis=-1, keepdims=True)
+    output_var = jnp.maximum(outputs.component_var, min_var)
+    log_q = jsp.special.logsumexp(
+        jnp.log(output_weights[..., None, None, :])
+        + _normal_log_prob(
+            z[..., None],
+            outputs.component_mean[..., None, None, :],
+            output_var[..., None, None, :],
+        ),
+        axis=-1,
+    )
+    return -jnp.sum(target_weights * log_q, axis=(-2, -1))
+
+
+def _previous_filter_beliefs(
+    filter_mean: jax.Array,
+    filter_var: jax.Array,
+    params: LinearGaussianParams,
+) -> tuple[jax.Array, jax.Array]:
+    initial_mean = jnp.full((filter_mean.shape[0], 1), params.m0, dtype=filter_mean.dtype)
+    initial_var = jnp.full((filter_var.shape[0], 1), params.p0, dtype=filter_var.dtype)
+    return (
+        jnp.concatenate((initial_mean, filter_mean[:, :-1]), axis=1),
+        jnp.concatenate((initial_var, filter_var[:, :-1]), axis=1),
+    )
+
+
+def _previous_mixture_filter_beliefs(
+    outputs: GaussianMixtureMLPOutputs,
+    params: LinearGaussianParams,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    batch_size = outputs.component_mean.shape[0]
+    num_components = outputs.component_mean.shape[-1]
+    initial_weights = jnp.full(
+        (batch_size, 1, num_components),
+        1.0 / num_components,
+        dtype=outputs.filter_weights.dtype,
+    )
+    initial_mean = jnp.full(
+        (batch_size, 1, num_components),
+        params.m0,
+        dtype=outputs.component_mean.dtype,
+    )
+    initial_var = jnp.full(
+        (batch_size, 1, num_components),
+        params.p0,
+        dtype=outputs.component_var.dtype,
+    )
+    return (
+        jnp.concatenate((initial_weights, outputs.filter_weights[:, :-1]), axis=1),
+        jnp.concatenate((initial_mean, outputs.component_mean[:, :-1]), axis=1),
+        jnp.concatenate((initial_var, outputs.component_var[:, :-1]), axis=1),
+    )
+
+
+def _hermgauss(num_points: int, dtype: jnp.dtype) -> tuple[jax.Array, jax.Array]:
+    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
+    nodes = jnp.asarray(nodes_np, dtype=dtype)
+    log_weights = jnp.log(jnp.asarray(weights_np, dtype=dtype))
+    return nodes, log_weights
 
 
 def _time_major_to_batch_major(value: jax.Array) -> jax.Array:

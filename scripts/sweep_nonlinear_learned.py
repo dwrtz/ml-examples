@@ -52,6 +52,9 @@ class ModelSpec:
     predictive_y_ramp_fraction: float = 0.0
     predictive_y_num_samples: int = 32
     predictive_y_estimator: str = "quadrature"
+    local_projection_weight: float = 0.0
+    local_projection_num_points: int = 32
+    local_projection_stop_target: bool = True
     mask_y_probability: float = 0.0
     mask_y_span_probability: float = 0.0
     mask_y_span_length: int = 1
@@ -660,6 +663,42 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k2_local_projection": ModelSpec(
+            key="direct_mixture_k2_local_projection",
+            label="direct nonlinear K2 mixture local ADF projection",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_hybrid_iwae_projection_h4_k16": ModelSpec(
+            key="direct_mixture_k2_hybrid_iwae_projection_h4_k16",
+            label="direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=16,
+            objective_family="iwae",
+            num_importance_samples=16,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_local_projection": ModelSpec(
+            key="direct_local_projection",
+            label="direct nonlinear local ADF projection",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+        ),
         "structured_mixture_k2_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4": ModelSpec(
             key="structured_mixture_k2_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4",
             label=(
@@ -832,6 +871,9 @@ def _make_train_config(
         "joint_elbo_num_windows": spec.joint_elbo_num_windows,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
+        "local_projection_weight": spec.local_projection_weight,
+        "local_projection_num_points": spec.local_projection_num_points,
+        "local_projection_stop_target": spec.local_projection_stop_target,
         "mask_y_probability": spec.mask_y_probability,
         "mask_y_span_probability": spec.mask_y_span_probability,
         "mask_y_span_length": spec.mask_y_span_length,
@@ -906,6 +948,9 @@ def _load_row(
         "joint_elbo_num_windows": metrics["joint_elbo_num_windows"],
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
+        "local_projection_weight": metrics.get("local_projection_weight", 0.0),
+        "local_projection_num_points": metrics.get("local_projection_num_points", 32),
+        "local_projection_stop_target": metrics.get("local_projection_stop_target", True),
         "state_nll_estimator": metrics.get("state_nll_estimator", "gaussian"),
         "coverage_estimator": metrics.get("coverage_estimator", "moment_gaussian"),
         "mask_y_probability": metrics["mask_y_probability"],
@@ -971,6 +1016,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "joint_elbo_num_windows",
         "predictive_y_num_samples",
         "predictive_y_estimator",
+        "local_projection_weight",
+        "local_projection_num_points",
+        "local_projection_stop_target",
         "state_nll_estimator",
         "coverage_estimator",
         "mask_y_probability",

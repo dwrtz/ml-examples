@@ -35,6 +35,7 @@ from vbf.nonlinear import (
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
+    nonlinear_tilted_projection_loss,
     nonlinear_structured_mlp_step,
     run_nonlinear_structured_mixture_mlp_filter,
     run_nonlinear_structured_mlp_filter,
@@ -81,7 +82,8 @@ def main() -> None:
     entropy_bonus_weight = float(training_config.get("entropy_bonus_weight", 0.0))
     posterior_family = str(training_config.get("posterior_family", "gaussian"))
     mixture_components = int(training_config.get("mixture_components", 1))
-    elbo_weight = float(training_config.get("elbo_weight", 1.0))
+    default_elbo_weight = 0.0 if objective_family == "local_projection" else 1.0
+    elbo_weight = float(training_config.get("elbo_weight", default_elbo_weight))
     joint_elbo_weight = float(training_config.get("joint_elbo_weight", 0.0))
     joint_elbo_horizon = int(training_config.get("joint_elbo_horizon", 1))
     joint_elbo_num_samples = int(training_config.get("joint_elbo_num_samples", 16))
@@ -92,6 +94,12 @@ def main() -> None:
     predictive_y_ramp_fraction = float(training_config.get("predictive_y_ramp_fraction", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
+    default_local_projection_weight = 1.0 if objective_family == "local_projection" else 0.0
+    local_projection_weight = float(
+        training_config.get("local_projection_weight", default_local_projection_weight)
+    )
+    local_projection_num_points = int(training_config.get("local_projection_num_points", 32))
+    local_projection_stop_target = bool(training_config.get("local_projection_stop_target", True))
     reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
     reference_rollout_weight = float(training_config.get("reference_rollout_weight", 0.0))
     reference_rollout_horizon = int(training_config.get("reference_rollout_horizon", 1))
@@ -139,12 +147,16 @@ def main() -> None:
         raise ValueError("joint_elbo_num_windows must be positive")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
+    if local_projection_weight < 0.0:
+        raise ValueError("local_projection_weight must be nonnegative")
+    if local_projection_num_points <= 0:
+        raise ValueError("local_projection_num_points must be positive")
     if not 0.0 <= predictive_y_start_fraction <= 1.0:
         raise ValueError("predictive_y_start_fraction must be in [0, 1]")
     if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
         raise ValueError("predictive_y_ramp_fraction must be in [0, 1]")
-    if objective_family not in {"elbo", "iwae", "renyi"}:
-        raise ValueError("objective_family must be one of: elbo, iwae, renyi")
+    if objective_family not in {"elbo", "iwae", "renyi", "local_projection"}:
+        raise ValueError("objective_family must be one of: elbo, iwae, renyi, local_projection")
     if num_importance_samples <= 0:
         raise ValueError("num_importance_samples must be positive")
     if not 0.0 < renyi_alpha <= 1.0:
@@ -276,6 +288,8 @@ def main() -> None:
                 )
             )
         if joint_elbo_weight != 0.0:
+            if objective_family == "local_projection":
+                raise ValueError("local_projection objective_family cannot be used for joint ELBO")
             joint_key = jax.random.fold_in(key, joint_elbo_window_seed_offset)
             joint_objective = _nonlinear_windowed_joint_objective(
                 outputs,
@@ -331,6 +345,17 @@ def main() -> None:
                 )
             )
             loss = loss - effective_predictive_y_weight * jnp.mean(predictive_y_log_prob)
+        if local_projection_weight != 0.0:
+            projection_loss = nonlinear_tilted_projection_loss(
+                outputs,
+                batch,
+                state_params,
+                observation=data_config.observation,
+                num_points=local_projection_num_points,
+                min_var=min_var,
+                stop_target=local_projection_stop_target,
+            )
+            loss = loss + local_projection_weight * jnp.mean(projection_loss)
         if reference_mean_weight != 0.0:
             if train_reference is None:
                 raise ValueError("train_reference is required for reference mean distillation")
@@ -541,6 +566,9 @@ def main() -> None:
         "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_y_estimator": predictive_y_estimator,
+        "local_projection_weight": local_projection_weight,
+        "local_projection_num_points": local_projection_num_points,
+        "local_projection_stop_target": local_projection_stop_target,
         "state_nll_estimator": "mixture_density" if _is_mixture_outputs(outputs) else "gaussian",
         "coverage_estimator": "moment_gaussian",
         "reference_mean_weight": reference_mean_weight,

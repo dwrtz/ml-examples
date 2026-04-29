@@ -14,6 +14,7 @@ from vbf.models.cells import (
 from vbf.nonlinear import (
     NonlinearDataConfig,
     make_nonlinear_batch,
+    nonlinear_tilted_projection_loss,
     run_nonlinear_structured_mixture_mlp_filter,
     run_nonlinear_structured_mlp_filter,
 )
@@ -210,3 +211,48 @@ def test_windowed_joint_structured_mixture_objective_is_finite() -> None:
     )
 
     assert jnp.all(jnp.isfinite(objective))
+
+
+def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, state_params, seed=251)
+
+    gaussian_params = init_structured_mlp_params(jax.random.PRNGKey(252), hidden_dim=8)
+    gaussian_outputs = run_nonlinear_structured_mlp_filter(
+        gaussian_params,
+        batch,
+        state_params,
+        observation="x_sine",
+    )
+    gaussian_loss = nonlinear_tilted_projection_loss(
+        gaussian_outputs,
+        batch,
+        state_params,
+        observation="x_sine",
+        num_points=8,
+    )
+
+    mixture_params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(253),
+        hidden_dim=8,
+        num_components=2,
+    )
+    mixture_outputs = run_direct_mixture_mlp_filter(
+        mixture_params,
+        batch,
+        state_params,
+        num_components=2,
+    )
+    mixture_loss = nonlinear_tilted_projection_loss(
+        mixture_outputs,
+        batch,
+        state_params,
+        observation="x_sine",
+        num_points=8,
+    )
+
+    assert gaussian_loss.shape == batch.y.shape
+    assert mixture_loss.shape == batch.y.shape
+    assert jnp.all(jnp.isfinite(gaussian_loss))
+    assert jnp.all(jnp.isfinite(mixture_loss))

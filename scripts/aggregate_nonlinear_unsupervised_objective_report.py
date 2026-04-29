@@ -37,6 +37,7 @@ STRUCTURED_BASELINE = "EKF-residualized nonlinear MC ELBO"
 DIRECT_BASELINE = "direct nonlinear MC ELBO"
 DIRECT_DISTILL = "direct nonlinear MLP + reference moment distillation"
 ROLLOUT_DISTILL = "EKF-residualized nonlinear MLP + h4 reference rollout distillation"
+PREDICTIVE_Y_REGRESSION_TOLERANCE = 0.03
 
 MODEL_LABELS = {
     STRUCTURED_BASELINE: "structured ELBO",
@@ -44,6 +45,11 @@ MODEL_LABELS = {
     PROMOTED_MODEL: "joint h4 w0.05 + predictive-y + masked-y h4",
     DIRECT_DISTILL: "direct reference moment distillation",
     ROLLOUT_DISTILL: "structured h4 reference rollout distillation",
+    "direct nonlinear K2 mixture local ADF projection": "direct K2 local ADF projection",
+    "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection": (
+        "direct K2 IWAE h4 k16 + local ADF projection"
+    ),
+    "direct nonlinear local ADF projection": "direct local ADF projection",
 }
 
 
@@ -250,8 +256,8 @@ def _render_report(rows: list[AggregateRow], input_paths: list[Path]) -> str:
         "",
         "## Robustness Suite",
         "",
-        "| Pattern | Row | signal | state NLL | cov 90 | var ratio | pred NLL |",
-        "|---|---|---|---:|---:|---:|---:|",
+        "| Pattern | Row | signal | state NLL | cov 90 | var ratio | pred-y NLL | pred NLL |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
     for row in _selected_robustness_rows(robustness_rows):
         lines.append(_metric_table_row(row))
@@ -288,19 +294,68 @@ def _render_report(rows: list[AggregateRow], input_paths: list[Path]) -> str:
             "",
             "## Objective Variants Tested",
             "",
-            "| Suite | Pattern | Row | state NLL | cov 90 | var ratio |",
-            "|---|---|---|---:|---:|---:|",
+            "| Suite | Pattern | Row | state NLL | cov 90 | var ratio | pred-y NLL |",
+            "|---|---|---|---:|---:|---:|---:|",
         ]
     )
     for row in _selected_pilot_rows(pilot_rows):
         lines.append(
-            "| {suite} | {pattern} | {model} | {nll:.3f} | {cov:.3f} | {var:.3f} |".format(
+            "| {suite} | {pattern} | {model} | {nll:.3f} | {cov:.3f} | {var:.3f} | {pred_y:.3f} |".format(
                 suite=row.suite,
                 pattern=row.x_pattern,
                 model=_model_label(row.model),
                 nll=row.metrics["state_nll"],
                 cov=row.metrics["coverage_90"],
                 var=row.metrics["variance_ratio"],
+                pred_y=row.metrics.get("predictive_y_nll", row.metrics.get("predictive_nll")),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Predictive-Y Promotion Gate",
+            "",
+            f"Promotable rows must keep predictive-y NLL within {PREDICTIVE_Y_REGRESSION_TOLERANCE:.2f} of the current promoted baseline for the same pattern.",
+            "",
+            "| Pattern | state-density candidate | predictive-y candidate | promotable candidate | baseline pred-y NLL |",
+            "|---|---|---|---|---:|",
+        ]
+    )
+    for pattern in sorted({row.x_pattern for row in pilot_rows + robustness_rows}):
+        baseline = _find_row(rows, pattern, PROMOTED_MODEL)
+        baseline_pred_y = (
+            baseline.metrics.get("predictive_y_nll", baseline.metrics.get("predictive_nll"))
+            if baseline is not None
+            else None
+        )
+        candidates = [
+            row
+            for row in rows
+            if row.x_pattern == pattern and row.training_signal == "unsupervised"
+        ]
+        state_candidate = _best_row(candidates, "state_nll")
+        predictive_candidate = _best_row(candidates, "predictive_y_nll")
+        promotable = (
+            _best_row(
+                [
+                    row
+                    for row in candidates
+                    if row.metrics.get("predictive_y_nll", row.metrics.get("predictive_nll"))
+                    <= baseline_pred_y + PREDICTIVE_Y_REGRESSION_TOLERANCE
+                ],
+                "state_nll",
+            )
+            if baseline_pred_y is not None
+            else None
+        )
+        lines.append(
+            "| {pattern} | {state} | {pred_y} | {promotable} | {baseline} |".format(
+                pattern=pattern,
+                state=_candidate_label(state_candidate),
+                pred_y=_candidate_label(predictive_candidate),
+                promotable=_candidate_label(promotable),
+                baseline="" if baseline_pred_y is None else f"{baseline_pred_y:.3f}",
             )
         )
 
@@ -367,6 +422,9 @@ def _selected_pilot_rows(rows: list[AggregateRow]) -> list[AggregateRow]:
             "EKF-residualized nonlinear windowed ELBO h4",
             "EKF-residualized nonlinear MC ELBO + joint h4 and predictive-y",
             "EKF-residualized nonlinear MC ELBO + joint h4, predictive-y, and masked-y spans h4",
+            "direct nonlinear K2 mixture local ADF projection",
+            "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection",
+            "direct nonlinear local ADF projection",
             PROMOTED_MODEL,
         }
     ]
@@ -395,7 +453,8 @@ def _find_row(rows: list[AggregateRow], pattern: str, model: str) -> AggregateRo
 
 def _metric_table_row(row: AggregateRow) -> str:
     return (
-        "| {pattern} | {model} | {signal} | {nll:.3f} | {cov:.3f} | {var:.3f} | {pred:.3f} |"
+        "| {pattern} | {model} | {signal} | {nll:.3f} | {cov:.3f} | {var:.3f} | "
+        "{pred_y:.3f} | {pred:.3f} |"
     ).format(
         pattern=row.x_pattern,
         model=_model_label(row.model),
@@ -403,7 +462,26 @@ def _metric_table_row(row: AggregateRow) -> str:
         nll=row.metrics["state_nll"],
         cov=row.metrics["coverage_90"],
         var=row.metrics["variance_ratio"],
+        pred_y=row.metrics.get("predictive_y_nll", row.metrics.get("predictive_nll")),
         pred=row.metrics["predictive_nll"],
+    )
+
+
+def _best_row(rows: list[AggregateRow], metric: str) -> AggregateRow | None:
+    available = [row for row in rows if metric in row.metrics]
+    if not available:
+        return None
+    return min(available, key=lambda row: row.metrics[metric])
+
+
+def _candidate_label(row: AggregateRow | None) -> str:
+    if row is None:
+        return ""
+    pred_y = row.metrics.get("predictive_y_nll", row.metrics.get("predictive_nll"))
+    return "{model} (state {state:.3f}, pred-y {pred_y:.3f})".format(
+        model=_model_label(row.model),
+        state=row.metrics["state_nll"],
+        pred_y=pred_y,
     )
 
 
