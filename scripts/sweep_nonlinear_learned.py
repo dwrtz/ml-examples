@@ -48,6 +48,8 @@ class ModelSpec:
     joint_elbo_num_samples: int = 16
     joint_elbo_num_windows: int = 8
     predictive_y_weight: float = 0.0
+    predictive_y_start_fraction: float = 0.0
+    predictive_y_ramp_fraction: float = 0.0
     predictive_y_num_samples: int = 32
     predictive_y_estimator: str = "quadrature"
     mask_y_probability: float = 0.0
@@ -609,6 +611,40 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w03_late": ModelSpec(
+            key="direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w03_late",
+            label="direct nonlinear K2 mixture IWAE h4 k32 + late predictive-y w0.3",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            predictive_y_weight=0.3,
+            predictive_y_start_fraction=0.5,
+            predictive_y_ramp_fraction=0.25,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w1_late": ModelSpec(
+            key="direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w1_late",
+            label="direct nonlinear K2 mixture IWAE h4 k32 + late predictive-y w1",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            predictive_y_weight=1.0,
+            predictive_y_start_fraction=0.5,
+            predictive_y_ramp_fraction=0.25,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
         "direct_mixture_k2_joint_iwae_h4_k16_predictive_y": ModelSpec(
             key="direct_mixture_k2_joint_iwae_h4_k16_predictive_y",
             label="direct nonlinear K2 mixture IWAE h4 k16 + predictive-y",
@@ -788,6 +824,8 @@ def _make_train_config(
         "num_elbo_samples": num_elbo_samples,
         "elbo_weight": spec.elbo_weight,
         "predictive_y_weight": spec.predictive_y_weight,
+        "predictive_y_start_fraction": spec.predictive_y_start_fraction,
+        "predictive_y_ramp_fraction": spec.predictive_y_ramp_fraction,
         "joint_elbo_weight": spec.joint_elbo_weight,
         "joint_elbo_horizon": spec.joint_elbo_horizon,
         "joint_elbo_num_samples": spec.joint_elbo_num_samples,
@@ -860,6 +898,8 @@ def _load_row(
         "mixture_components": metrics["mixture_components"],
         "elbo_weight": metrics["elbo_weight"],
         "predictive_y_weight": metrics["predictive_y_weight"],
+        "predictive_y_start_fraction": metrics.get("predictive_y_start_fraction", 0.0),
+        "predictive_y_ramp_fraction": metrics.get("predictive_y_ramp_fraction", 0.0),
         "joint_elbo_weight": metrics["joint_elbo_weight"],
         "joint_elbo_horizon": metrics["joint_elbo_horizon"],
         "joint_elbo_num_samples": metrics["joint_elbo_num_samples"],
@@ -923,6 +963,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "mixture_components",
         "elbo_weight",
         "predictive_y_weight",
+        "predictive_y_start_fraction",
+        "predictive_y_ramp_fraction",
         "joint_elbo_weight",
         "joint_elbo_horizon",
         "joint_elbo_num_samples",

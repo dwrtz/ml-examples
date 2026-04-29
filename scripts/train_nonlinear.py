@@ -88,6 +88,8 @@ def main() -> None:
     joint_elbo_num_windows = int(training_config.get("joint_elbo_num_windows", 8))
     joint_elbo_window_seed_offset = int(training_config.get("joint_elbo_window_seed_offset", 80_000))
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
+    predictive_y_start_fraction = float(training_config.get("predictive_y_start_fraction", 0.0))
+    predictive_y_ramp_fraction = float(training_config.get("predictive_y_ramp_fraction", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
     reference_mean_weight = float(training_config.get("reference_mean_weight", 0.0))
@@ -137,6 +139,10 @@ def main() -> None:
         raise ValueError("joint_elbo_num_windows must be positive")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
+    if not 0.0 <= predictive_y_start_fraction <= 1.0:
+        raise ValueError("predictive_y_start_fraction must be in [0, 1]")
+    if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
+        raise ValueError("predictive_y_ramp_fraction must be in [0, 1]")
     if objective_family not in {"elbo", "iwae", "renyi"}:
         raise ValueError("objective_family must be one of: elbo, iwae, renyi")
     if num_importance_samples <= 0:
@@ -228,6 +234,7 @@ def main() -> None:
         batch_z: jax.Array,
         y_observed: jax.Array,
         key: jax.Array,
+        step_index: jax.Array,
     ) -> jax.Array:
         batch = EpisodeBatch(x=batch_x, y=batch_y, z=batch_z)
         outputs = (
@@ -291,6 +298,12 @@ def main() -> None:
             loss = loss - entropy_bonus_weight * jnp.mean(
                 _gaussian_filter_entropy(outputs.filter_var)
             )
+        effective_predictive_y_weight = predictive_y_weight * _scheduled_weight(
+            step_index,
+            total_steps=int(training_config["steps"]),
+            start_fraction=predictive_y_start_fraction,
+            ramp_fraction=predictive_y_ramp_fraction,
+        )
         if predictive_y_weight != 0.0:
             prev_mean, prev_var = previous_filter_beliefs(
                 outputs.filter_mean,
@@ -317,7 +330,7 @@ def main() -> None:
                     num_points=predictive_y_num_samples,
                 )
             )
-            loss = loss - predictive_y_weight * jnp.mean(predictive_y_log_prob)
+            loss = loss - effective_predictive_y_weight * jnp.mean(predictive_y_log_prob)
         if reference_mean_weight != 0.0:
             if train_reference is None:
                 raise ValueError("train_reference is required for reference mean distillation")
@@ -397,6 +410,7 @@ def main() -> None:
             step_batch.z,
             step_y_observed,
             step_key,
+            jnp.asarray(step, dtype=jnp.float64),
         )
         params, opt_state = adam_update(
             params,
@@ -415,6 +429,7 @@ def main() -> None:
             train_batch.z,
             train_y_observed,
             jax.random.PRNGKey(int(config["seed"]) + 3),
+            jnp.asarray(training_config["steps"], dtype=jnp.float64),
         )
     )
     outputs = _run_model_filter(
@@ -522,6 +537,8 @@ def main() -> None:
         "joint_elbo_num_windows": joint_elbo_num_windows,
         "joint_elbo_window_seed_offset": joint_elbo_window_seed_offset,
         "predictive_y_weight": predictive_y_weight,
+        "predictive_y_start_fraction": predictive_y_start_fraction,
+        "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_y_estimator": predictive_y_estimator,
         "state_nll_estimator": "mixture_density" if _is_mixture_outputs(outputs) else "gaussian",
@@ -1193,6 +1210,20 @@ def _nonlinear_windowed_joint_log_weights(
 
 def _gaussian_filter_entropy(filter_var: jax.Array) -> jax.Array:
     return 0.5 * (LOG_2PI + 1.0 + jnp.log(filter_var))
+
+
+def _scheduled_weight(
+    step_index: jax.Array,
+    *,
+    total_steps: int,
+    start_fraction: float,
+    ramp_fraction: float,
+) -> jax.Array:
+    progress = step_index / float(total_steps)
+    if ramp_fraction == 0.0:
+        return jnp.where(progress >= start_fraction, 1.0, 0.0)
+    ramp = (progress - start_fraction) / ramp_fraction
+    return jnp.clip(ramp, 0.0, 1.0)
 
 
 def _nonlinear_mixture_edge_log_weights(
