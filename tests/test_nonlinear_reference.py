@@ -11,6 +11,7 @@ from vbf.nonlinear import (
     nonlinear_grid_filter,
     nonlinear_grid_filter_masses,
     nonlinear_grid_filter_shape_diagnostics,
+    nonlinear_bootstrap_particle_filter,
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
@@ -133,6 +134,30 @@ def test_nonlinear_grid_filter_masses_are_normalized() -> None:
     assert grid_outputs.grid.shape == (101,)
     assert grid_outputs.filter_mass.shape == (2, 4, 101)
     assert jnp.allclose(jnp.sum(grid_outputs.filter_mass, axis=-1), 1.0)
+
+
+def test_bootstrap_particle_filter_outputs_are_finite() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=5, observation="x_sine")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=132)
+
+    outputs = nonlinear_bootstrap_particle_filter(
+        batch,
+        params,
+        data_config=config,
+        num_particles=32,
+        seed=133,
+    )
+
+    assert outputs.filter_mean.shape == batch.y.shape
+    assert outputs.filter_var.shape == batch.y.shape
+    assert outputs.predictive_log_prob_y.shape == batch.y.shape
+    assert outputs.filter_log_prob_z.shape == batch.y.shape
+    assert jnp.all(jnp.isfinite(outputs.filter_mean))
+    assert jnp.all(outputs.filter_var > 0.0)
+    assert jnp.all(jnp.isfinite(outputs.predictive_log_prob_y))
+    assert jnp.all(jnp.isfinite(outputs.filter_log_prob_z))
+    assert outputs.mean_ess > 0.0
 
 
 def test_x_sine_predictive_moments_are_finite_and_positive() -> None:

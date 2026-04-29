@@ -73,6 +73,16 @@ class NonlinearReferenceGridOutputs(NamedTuple):
     filter_mass: jax.Array
 
 
+class NonlinearParticleFilterOutputs(NamedTuple):
+    filter_mean: jax.Array
+    filter_var: jax.Array
+    predictive_mean: jax.Array
+    predictive_var: jax.Array
+    predictive_log_prob_y: jax.Array
+    filter_log_prob_z: jax.Array
+    mean_ess: jax.Array
+
+
 def make_y_observed_mask(
     *,
     batch_size: int,
@@ -366,6 +376,102 @@ def nonlinear_grid_filter_masses(
     return NonlinearReferenceGridOutputs(
         grid=grid,
         filter_mass=jnp.swapaxes(mass_tbg, 0, 1),
+    )
+
+
+def nonlinear_bootstrap_particle_filter(
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    data_config: NonlinearDataConfig,
+    num_particles: int = 128,
+    seed: int = 0,
+    kde_bandwidth_scale: float = 1.0,
+) -> NonlinearParticleFilterOutputs:
+    """Run a bootstrap particle filter for nonlinear reference diagnostics."""
+
+    if data_config.observation != "x_sine":
+        raise ValueError(f"Unsupported particle filter observation: {data_config.observation}")
+    if num_particles <= 0:
+        raise ValueError("num_particles must be positive")
+    if kde_bandwidth_scale <= 0.0:
+        raise ValueError("kde_bandwidth_scale must be positive")
+
+    batch_size = batch.x.shape[0]
+    key = jax.random.PRNGKey(seed)
+    init_particles = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
+        key,
+        shape=(batch_size, num_particles),
+        dtype=batch.x.dtype,
+    )
+
+    x_tb = batch.x.T
+    y_tb = batch.y.T
+    z_tb = batch.z.T
+    step_keys = jax.random.split(jax.random.fold_in(key, 1), batch.x.shape[1])
+
+    def step(
+        particles: jax.Array,
+        obs: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, tuple[jax.Array, ...]]:
+        x_t, y_t, z_t_true, step_key = obs
+        transition_key, resample_key = jax.random.split(step_key)
+        pred_particles = particles + jnp.sqrt(params.q) * jax.random.normal(
+            transition_key,
+            shape=particles.shape,
+            dtype=particles.dtype,
+        )
+        obs_mean = nonlinear_observation_mean(
+            pred_particles,
+            x_t[:, None],
+            data_config.observation,
+        )
+        predictive_mean = jnp.mean(obs_mean, axis=1)
+        predictive_var = jnp.mean((obs_mean - predictive_mean[:, None]) ** 2 + params.r, axis=1)
+        log_likelihood = _normal_log_prob(y_t[:, None], obs_mean, params.r)
+        predictive_log_prob_y = jsp.special.logsumexp(log_likelihood, axis=1) - jnp.log(
+            num_particles
+        )
+        log_weights = log_likelihood - jsp.special.logsumexp(
+            log_likelihood,
+            axis=1,
+            keepdims=True,
+        )
+        weights = jnp.exp(log_weights)
+        filter_mean = jnp.sum(weights * pred_particles, axis=1)
+        filter_var = jnp.sum(weights * (pred_particles - filter_mean[:, None]) ** 2, axis=1)
+        bandwidth_var = _particle_kde_bandwidth_var(pred_particles, weights, kde_bandwidth_scale)
+        filter_log_prob_z = _particle_kde_log_prob(
+            z_t_true,
+            pred_particles,
+            weights,
+            bandwidth_var,
+        )
+        ess = 1.0 / jnp.sum(weights**2, axis=1)
+        resample_keys = jax.random.split(resample_key, batch_size)
+        indices = jax.vmap(
+            lambda row_key, row_logits: jax.random.categorical(
+                row_key,
+                logits=row_logits,
+                shape=(num_particles,),
+            )
+        )(resample_keys, log_weights)
+        next_particles = jnp.take_along_axis(pred_particles, indices, axis=1)
+        return next_particles, (
+            filter_mean,
+            filter_var,
+            predictive_mean,
+            predictive_var,
+            predictive_log_prob_y,
+            filter_log_prob_z,
+            ess,
+        )
+
+    _, outputs = jax.lax.scan(step, init_particles, (x_tb, y_tb, z_tb, step_keys))
+    batch_major = tuple(_time_major_to_batch_major(item) for item in outputs)
+    return NonlinearParticleFilterOutputs(
+        *batch_major[:-1],
+        mean_ess=jnp.mean(batch_major[-1]),
     )
 
 
@@ -903,6 +1009,30 @@ def _hermgauss(num_points: int, dtype: jnp.dtype) -> tuple[jax.Array, jax.Array]
     nodes = jnp.asarray(nodes_np, dtype=dtype)
     log_weights = jnp.log(jnp.asarray(weights_np, dtype=dtype))
     return nodes, log_weights
+
+
+def _particle_kde_bandwidth_var(
+    particles: jax.Array,
+    weights: jax.Array,
+    bandwidth_scale: float,
+) -> jax.Array:
+    mean = jnp.sum(weights * particles, axis=1)
+    var = jnp.sum(weights * (particles - mean[:, None]) ** 2, axis=1)
+    effective_n = 1.0 / jnp.sum(weights**2, axis=1)
+    bandwidth = bandwidth_scale * 1.06 * jnp.sqrt(jnp.maximum(var, 1e-12)) * effective_n ** (-0.2)
+    return jnp.maximum(bandwidth**2, 1e-8)
+
+
+def _particle_kde_log_prob(
+    value: jax.Array,
+    particles: jax.Array,
+    weights: jax.Array,
+    bandwidth_var: jax.Array,
+) -> jax.Array:
+    return jsp.special.logsumexp(
+        jnp.log(weights) + _normal_log_prob(value[:, None], particles, bandwidth_var[:, None]),
+        axis=1,
+    )
 
 
 def _time_major_to_batch_major(value: jax.Array) -> jax.Array:
