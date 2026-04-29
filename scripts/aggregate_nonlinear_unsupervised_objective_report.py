@@ -51,6 +51,8 @@ MODEL_LABELS = {
     "direct nonlinear K2 mixture local ADF projection beta 0.3": "direct K2 local ADF beta 0.3",
     "direct nonlinear K2 mixture local ADF projection beta 0.5": "direct K2 local ADF beta 0.5",
     "direct nonlinear K2 mixture local ADF projection beta 0.7": "direct K2 local ADF beta 0.7",
+    "direct nonlinear K2 mixture FIVO n16": "direct K2 FIVO n16",
+    "direct nonlinear K2 mixture FIVO n32": "direct K2 FIVO n32",
     "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection": (
         "direct K2 IWAE h4 k16 + local ADF projection"
     ),
@@ -439,6 +441,8 @@ def _selected_pilot_rows(rows: list[AggregateRow]) -> list[AggregateRow]:
             "direct nonlinear K2 mixture local ADF projection beta 0.3",
             "direct nonlinear K2 mixture local ADF projection beta 0.5",
             "direct nonlinear K2 mixture local ADF projection beta 0.7",
+            "direct nonlinear K2 mixture FIVO n16",
+            "direct nonlinear K2 mixture FIVO n32",
             "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection",
             "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.1",
             "direct nonlinear K2 mixture IWAE h4 k16 + local ADF projection w0.3",

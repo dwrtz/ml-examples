@@ -47,6 +47,8 @@ class ModelSpec:
     joint_elbo_horizon: int = 1
     joint_elbo_num_samples: int = 16
     joint_elbo_num_windows: int = 8
+    fivo_num_particles: int = 16
+    fivo_resampling: str = "every_step"
     predictive_y_weight: float = 0.0
     predictive_y_start_fraction: float = 0.0
     predictive_y_ramp_fraction: float = 0.0
@@ -664,6 +666,32 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k2_fivo_n16": ModelSpec(
+            key="direct_mixture_k2_fivo_n16",
+            label="direct nonlinear K2 mixture FIVO n16",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            objective_family="fivo",
+            num_importance_samples=16,
+            fivo_num_particles=16,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_fivo_n32": ModelSpec(
+            key="direct_mixture_k2_fivo_n32",
+            label="direct nonlinear K2 mixture FIVO n32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            objective_family="fivo",
+            num_importance_samples=32,
+            fivo_num_particles=32,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
         "direct_mixture_k2_local_projection": ModelSpec(
             key="direct_mixture_k2_local_projection",
             label="direct nonlinear K2 mixture local ADF projection",
@@ -960,6 +988,8 @@ def _make_train_config(
         "joint_elbo_horizon": spec.joint_elbo_horizon,
         "joint_elbo_num_samples": spec.joint_elbo_num_samples,
         "joint_elbo_num_windows": spec.joint_elbo_num_windows,
+        "fivo_num_particles": spec.fivo_num_particles,
+        "fivo_resampling": spec.fivo_resampling,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
         "local_projection_weight": spec.local_projection_weight,
@@ -1038,6 +1068,8 @@ def _load_row(
         "joint_elbo_horizon": metrics["joint_elbo_horizon"],
         "joint_elbo_num_samples": metrics["joint_elbo_num_samples"],
         "joint_elbo_num_windows": metrics["joint_elbo_num_windows"],
+        "fivo_num_particles": metrics.get("fivo_num_particles", metrics["num_importance_samples"]),
+        "fivo_resampling": metrics.get("fivo_resampling", "every_step"),
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
         "local_projection_weight": metrics.get("local_projection_weight", 0.0),
@@ -1109,6 +1141,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "joint_elbo_horizon",
         "joint_elbo_num_samples",
         "joint_elbo_num_windows",
+        "fivo_num_particles",
+        "fivo_resampling",
         "predictive_y_num_samples",
         "predictive_y_estimator",
         "local_projection_weight",

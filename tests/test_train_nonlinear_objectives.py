@@ -213,12 +213,42 @@ def test_windowed_joint_structured_mixture_objective_is_finite() -> None:
     assert jnp.all(jnp.isfinite(objective))
 
 
-def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
+def test_fivo_mixture_objective_is_finite() -> None:
+    train_nonlinear = _load_train_module()
     config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")
     state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
     batch = make_nonlinear_batch(config, state_params, seed=251)
+    mlp_params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(252),
+        hidden_dim=8,
+        num_components=2,
+    )
+    outputs = run_direct_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        state_params,
+        num_components=2,
+    )
 
-    gaussian_params = init_structured_mlp_params(jax.random.PRNGKey(252), hidden_dim=8)
+    objective = train_nonlinear._nonlinear_fivo_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(253),
+        observation="x_sine",
+        num_particles=4,
+    )
+
+    assert objective.shape == (2,)
+    assert jnp.all(jnp.isfinite(objective))
+
+
+def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, state_params, seed=261)
+
+    gaussian_params = init_structured_mlp_params(jax.random.PRNGKey(262), hidden_dim=8)
     gaussian_outputs = run_nonlinear_structured_mlp_filter(
         gaussian_params,
         batch,
@@ -234,7 +264,7 @@ def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
     )
 
     mixture_params = init_direct_mixture_mlp_params(
-        jax.random.PRNGKey(253),
+        jax.random.PRNGKey(263),
         hidden_dim=8,
         num_components=2,
     )

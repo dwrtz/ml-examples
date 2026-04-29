@@ -89,6 +89,8 @@ def main() -> None:
     joint_elbo_num_samples = int(training_config.get("joint_elbo_num_samples", 16))
     joint_elbo_num_windows = int(training_config.get("joint_elbo_num_windows", 8))
     joint_elbo_window_seed_offset = int(training_config.get("joint_elbo_window_seed_offset", 80_000))
+    fivo_num_particles = int(training_config.get("fivo_num_particles", num_importance_samples))
+    fivo_resampling = str(training_config.get("fivo_resampling", "every_step"))
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_start_fraction = float(training_config.get("predictive_y_start_fraction", 0.0))
     predictive_y_ramp_fraction = float(training_config.get("predictive_y_ramp_fraction", 0.0))
@@ -148,6 +150,10 @@ def main() -> None:
         raise ValueError("joint_elbo_num_samples must be positive")
     if joint_elbo_num_windows <= 0:
         raise ValueError("joint_elbo_num_windows must be positive")
+    if fivo_num_particles <= 0:
+        raise ValueError("fivo_num_particles must be positive")
+    if fivo_resampling != "every_step":
+        raise ValueError("Only fivo_resampling='every_step' is supported")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
     if local_projection_weight < 0.0:
@@ -160,8 +166,10 @@ def main() -> None:
         raise ValueError("predictive_y_start_fraction must be in [0, 1]")
     if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
         raise ValueError("predictive_y_ramp_fraction must be in [0, 1]")
-    if objective_family not in {"elbo", "iwae", "renyi", "local_projection"}:
-        raise ValueError("objective_family must be one of: elbo, iwae, renyi, local_projection")
+    if objective_family not in {"elbo", "iwae", "renyi", "local_projection", "fivo"}:
+        raise ValueError(
+            "objective_family must be one of: elbo, iwae, renyi, local_projection, fivo"
+        )
     if num_importance_samples <= 0:
         raise ValueError("num_importance_samples must be positive")
     if not 0.0 < renyi_alpha <= 1.0:
@@ -296,21 +304,32 @@ def main() -> None:
             if objective_family == "local_projection":
                 raise ValueError("local_projection objective_family cannot be used for joint ELBO")
             joint_key = jax.random.fold_in(key, joint_elbo_window_seed_offset)
-            joint_objective = _nonlinear_windowed_joint_objective(
-                outputs,
-                batch,
-                state_params,
-                joint_key,
-                observation=data_config.observation,
-                horizon=joint_elbo_horizon,
-                num_samples=(
-                    num_importance_samples
-                    if objective_family in {"iwae", "renyi"}
-                    else joint_elbo_num_samples
-                ),
-                num_windows=joint_elbo_num_windows,
-                objective_family=objective_family,
-                renyi_alpha=renyi_alpha,
+            joint_objective = (
+                _nonlinear_fivo_objective(
+                    outputs,
+                    batch,
+                    state_params,
+                    joint_key,
+                    observation=data_config.observation,
+                    num_particles=fivo_num_particles,
+                )
+                if objective_family == "fivo"
+                else _nonlinear_windowed_joint_objective(
+                    outputs,
+                    batch,
+                    state_params,
+                    joint_key,
+                    observation=data_config.observation,
+                    horizon=joint_elbo_horizon,
+                    num_samples=(
+                        num_importance_samples
+                        if objective_family in {"iwae", "renyi"}
+                        else joint_elbo_num_samples
+                    ),
+                    num_windows=joint_elbo_num_windows,
+                    objective_family=objective_family,
+                    renyi_alpha=renyi_alpha,
+                )
             )
             loss = loss - joint_elbo_weight * jnp.mean(joint_objective)
         if entropy_bonus_weight != 0.0:
@@ -567,6 +586,8 @@ def main() -> None:
         "joint_elbo_num_samples": joint_elbo_num_samples,
         "joint_elbo_num_windows": joint_elbo_num_windows,
         "joint_elbo_window_seed_offset": joint_elbo_window_seed_offset,
+        "fivo_num_particles": fivo_num_particles,
+        "fivo_resampling": fivo_resampling,
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_start_fraction": predictive_y_start_fraction,
         "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
@@ -1241,6 +1262,101 @@ def _nonlinear_windowed_joint_log_weights(
     initial_var = jnp.take(prev_var, first_transition_indices, axis=1)
     log_score = log_score + _normal_log_prob(z_t, initial_mean[None, ...], initial_var[None, ...])
     return log_score - log_q
+
+
+def _nonlinear_fivo_objective(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    num_particles: int,
+) -> jax.Array:
+    """Sequential particle-filter marginal likelihood objective."""
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported FIVO observation: {observation}")
+    if num_particles <= 0:
+        raise ValueError("num_particles must be positive")
+
+    batch_size = batch.x.shape[0]
+    init_key, scan_key = jax.random.split(key)
+    prev_particles = state_params.m0 + jnp.sqrt(state_params.p0) * jax.random.normal(
+        init_key,
+        shape=(batch_size, num_particles),
+        dtype=batch.x.dtype,
+    )
+    step_keys = jax.random.split(scan_key, batch.x.shape[1])
+    proposal_params = (
+        (
+            outputs.filter_weights.transpose(1, 0, 2),
+            outputs.component_mean.transpose(1, 0, 2),
+            outputs.component_var.transpose(1, 0, 2),
+        )
+        if _is_mixture_outputs(outputs)
+        else (outputs.filter_mean.T, outputs.filter_var.T)
+    )
+
+    def step(carry: jax.Array, obs):
+        prev_z = carry
+        if _is_mixture_outputs(outputs):
+            x_t, y_t, weights_t, mean_t, var_t, step_key = obs
+            sample_key, resample_key = jax.random.split(step_key)
+            z_t, _ = _sample_mixture_marginal(
+                sample_key,
+                weights_t,
+                mean_t,
+                var_t,
+                sample_shape=(num_particles,),
+            )
+            z_t = jnp.swapaxes(z_t, 0, 1)
+            log_q = _mixture_log_prob(
+                z_t,
+                weights_t[:, None, :],
+                mean_t[:, None, :],
+                var_t[:, None, :],
+            )
+        else:
+            x_t, y_t, mean_t, var_t, step_key = obs
+            sample_key, resample_key = jax.random.split(step_key)
+            eps = jax.random.normal(
+                sample_key,
+                shape=(batch_size, num_particles),
+                dtype=batch.x.dtype,
+            )
+            z_t = mean_t[:, None] + jnp.sqrt(var_t[:, None]) * eps
+            log_q = _normal_log_prob(z_t, mean_t[:, None], var_t[:, None])
+
+        obs_mean = nonlinear_observation_mean(z_t, x_t[:, None], observation)
+        log_weights = (
+            _normal_log_prob(y_t[:, None], obs_mean, state_params.r)
+            + _normal_log_prob(z_t, prev_z, state_params.q)
+            - log_q
+        )
+        increment = jax.nn.logsumexp(log_weights, axis=1) - jnp.log(num_particles)
+        normalized_log_weights = log_weights - jax.nn.logsumexp(
+            log_weights,
+            axis=1,
+            keepdims=True,
+        )
+        resample_keys = jax.random.split(resample_key, batch_size)
+        indices = jax.vmap(
+            lambda row_key, row_logits: jax.random.categorical(
+                row_key,
+                logits=row_logits,
+                shape=(num_particles,),
+            )
+        )(resample_keys, normalized_log_weights)
+        next_z = jnp.take_along_axis(z_t, indices, axis=1)
+        return next_z, increment
+
+    _, increments = jax.lax.scan(
+        step,
+        prev_particles,
+        (batch.x.T, batch.y.T, *proposal_params, step_keys),
+    )
+    return jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
 
 
 def _gaussian_filter_entropy(filter_var: jax.Array) -> jax.Array:
