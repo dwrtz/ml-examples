@@ -765,6 +765,18 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k4_local_projection_beta_0p3": ModelSpec(
+            key="direct_mixture_k4_local_projection_beta_0p3",
+            label="direct nonlinear K4 mixture local ADF projection beta 0.3",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.3,
+            posterior_family="gaussian_mixture",
+            mixture_components=4,
+        ),
         "direct_mixture_k2_local_projection_beta_0p5": ModelSpec(
             key="direct_mixture_k2_local_projection_beta_0p5",
             label="direct nonlinear K2 mixture local ADF projection beta 0.5",
