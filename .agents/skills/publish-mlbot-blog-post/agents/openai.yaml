@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish mlbot.blog Post"
+  short_description: "Publish research posts to mlbot.blog"
+  default_prompt: "Use $publish-mlbot-blog-post to turn the current research results into a reviewed mlbot.blog post."
