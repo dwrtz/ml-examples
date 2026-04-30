@@ -74,6 +74,14 @@ def main() -> None:
     log_every = int(training_config.get("log_every", 50))
     init_span = float(training_config.get("mixture_component_mean_init_span", 2.0 * np.pi))
     target_likelihood_power = float(training_config.get("target_likelihood_power", 0.5))
+    target_projection = str(training_config.get("target_projection", "em"))
+    target_alias_spacing = float(training_config.get("target_alias_spacing", 0.0))
+    target_initial_weighting = str(training_config.get("target_initial_weighting", "uniform"))
+    target_max_active_aliases = int(training_config.get("target_max_active_aliases", 0))
+    target_alias_mean_shrink = float(training_config.get("target_alias_mean_shrink", 1.0))
+    target_alias_entropy_threshold = float(
+        training_config.get("target_alias_entropy_threshold", 0.0)
+    )
     target_num_points = int(training_config.get("target_num_points", 64))
     target_em_steps = int(training_config.get("target_em_steps", 30))
     target_density_num_points = int(training_config.get("target_density_num_points", 16))
@@ -85,7 +93,30 @@ def main() -> None:
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_carry_weight = float(training_config.get("predictive_carry_weight", 0.0))
+    predictive_normalizer_target_weight = float(
+        training_config.get("predictive_normalizer_target_weight", 0.0)
+    )
+    predictive_normalizer_num_points = int(
+        training_config.get("predictive_normalizer_num_points", predictive_y_num_samples)
+    )
+    rollout_distillation_weight = float(training_config.get("rollout_distillation_weight", 0.0))
+    rollout_distillation_horizon = int(training_config.get("rollout_distillation_horizon", 1))
+    rollout_distillation_stride = int(
+        training_config.get("rollout_distillation_stride", rollout_distillation_horizon)
+    )
     hybrid_refinement_steps = int(training_config.get("hybrid_refinement_steps", 0))
+    if predictive_normalizer_target_weight < 0.0:
+        raise ValueError("predictive_normalizer_target_weight must be nonnegative")
+    if predictive_normalizer_num_points <= 0:
+        raise ValueError("predictive_normalizer_num_points must be positive")
+    if rollout_distillation_weight < 0.0:
+        raise ValueError("rollout_distillation_weight must be nonnegative")
+    if rollout_distillation_horizon <= 0:
+        raise ValueError("rollout_distillation_horizon must be positive")
+    if rollout_distillation_horizon > data_config.time_steps:
+        raise ValueError("rollout_distillation_horizon cannot exceed data time_steps")
+    if rollout_distillation_stride <= 0:
+        raise ValueError("rollout_distillation_stride must be positive")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     target = run_quadrature_adf_filter(
@@ -95,6 +126,12 @@ def main() -> None:
         components=components,
         likelihood_power=target_likelihood_power,
         init_span=init_span,
+        projection=target_projection,
+        alias_spacing=target_alias_spacing,
+        initial_weighting=target_initial_weighting,
+        max_active_aliases=target_max_active_aliases,
+        alias_mean_shrink=target_alias_mean_shrink,
+        alias_entropy_threshold=target_alias_entropy_threshold,
         num_points=target_num_points,
         em_steps=target_em_steps,
         min_var=min_var,
@@ -107,6 +144,7 @@ def main() -> None:
     target_predictive_weights = jnp.asarray(target.predictive_weights)
     target_predictive_mean = jnp.asarray(target.predictive_component_mean)
     target_predictive_var = jnp.asarray(target.predictive_component_var)
+    target_predictive_y_log_prob = jnp.asarray(target.predictive_y_log_prob)
     density_nodes_np, density_weights_np = np.polynomial.hermite.hermgauss(
         target_density_num_points
     )
@@ -223,6 +261,42 @@ def main() -> None:
                 num_points=predictive_y_num_samples,
             )
             loss = loss - predictive_y_weight * jnp.mean(predictive_y_log_prob)
+        if predictive_normalizer_target_weight != 0.0:
+            predictive_log_prob = _mixture_preassimilation_log_prob_y_from_components(
+                * _previous_mixture_filter_beliefs(
+                    outputs,
+                    state_params,
+                    num_components=components,
+                    component_mean_init_span=init_span,
+                ),
+                batch.x,
+                batch.y,
+                state_params,
+                num_points=predictive_normalizer_num_points,
+                min_var=min_var,
+            )
+            normalizer_loss = jnp.mean((predictive_log_prob - target_predictive_y_log_prob) ** 2)
+            loss = loss + predictive_normalizer_target_weight * normalizer_loss
+        if rollout_distillation_weight != 0.0:
+            rollout_loss = _rollout_distillation_loss(
+                cell_type,
+                current_params["filter"],
+                batch,
+                state_params,
+                target_weights,
+                target_mean,
+                target_var,
+                target_predictive_weights,
+                target_predictive_mean,
+                target_predictive_var,
+                density_nodes,
+                density_log_weights,
+                num_components=components,
+                horizon=rollout_distillation_horizon,
+                stride=rollout_distillation_stride,
+                min_var=min_var,
+            )
+            loss = loss + rollout_distillation_weight * rollout_loss
         return loss
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -337,6 +411,12 @@ def main() -> None:
         "mixture_components": components,
         "mixture_component_mean_init_span": init_span,
         "target_likelihood_power": target_likelihood_power,
+        "target_projection": target_projection,
+        "target_alias_spacing": target_alias_spacing,
+        "target_initial_weighting": target_initial_weighting,
+        "target_max_active_aliases": target_max_active_aliases,
+        "target_alias_mean_shrink": target_alias_mean_shrink,
+        "target_alias_entropy_threshold": target_alias_entropy_threshold,
         "target_num_points": target_num_points,
         "target_em_steps": target_em_steps,
         "target_density_num_points": target_density_num_points,
@@ -348,6 +428,11 @@ def main() -> None:
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_carry_weight": predictive_carry_weight,
+        "predictive_normalizer_target_weight": predictive_normalizer_target_weight,
+        "predictive_normalizer_num_points": predictive_normalizer_num_points,
+        "rollout_distillation_weight": rollout_distillation_weight,
+        "rollout_distillation_horizon": rollout_distillation_horizon,
+        "rollout_distillation_stride": rollout_distillation_stride,
         "hybrid_refinement_steps": hybrid_refinement_steps,
         "eval_reference_cache_hit": eval_cached.cache_hit,
         "eval_reference_cache_path": str(eval_cached.cache_path),
@@ -560,6 +645,122 @@ def _run_filter(
         num_components=num_components,
         min_var=min_var,
     )
+
+
+def _rollout_distillation_loss(
+    cell_type: str,
+    params: dict[str, jax.Array],
+    batch,
+    state_params: LinearGaussianParams,
+    target_weights: jax.Array,
+    target_mean: jax.Array,
+    target_var: jax.Array,
+    target_predictive_weights: jax.Array,
+    target_predictive_mean: jax.Array,
+    target_predictive_var: jax.Array,
+    density_nodes: jax.Array,
+    density_log_weights: jax.Array,
+    *,
+    num_components: int,
+    horizon: int,
+    stride: int,
+    min_var: float,
+) -> jax.Array:
+    """Short self-fed rollouts initialized from teacher filtering beliefs."""
+
+    starts = range(0, batch.x.shape[1] - horizon + 1, stride)
+    losses = []
+    for start in starts:
+        init = _teacher_previous_carry(
+            target_weights,
+            target_mean,
+            target_var,
+            target_predictive_weights,
+            target_predictive_mean,
+            target_predictive_var,
+            state_params,
+            start=start,
+        )
+        x_window = batch.x[:, start : start + horizon].T
+        y_window = batch.y[:, start : start + horizon].T
+
+        def step(carry, obs):
+            prev_weights, prev_mean, prev_var = carry
+            x_t, y_t = obs
+            if cell_type == "component_mixture":
+                outputs = component_mixture_mlp_step(
+                    params,
+                    prev_weights,
+                    prev_mean,
+                    prev_var,
+                    x_t,
+                    y_t,
+                    state_params,
+                    min_var=min_var,
+                )
+            else:
+                outputs = direct_mixture_mlp_step(
+                    params,
+                    prev_weights,
+                    prev_mean,
+                    prev_var,
+                    x_t,
+                    y_t,
+                    state_params,
+                    num_components=num_components,
+                    min_var=min_var,
+                )
+            next_carry = (outputs.filter_weights, outputs.component_mean, outputs.component_var)
+            return next_carry, outputs
+
+        _, window_outputs = jax.lax.scan(step, init, (x_window, y_window))
+        pred_weights = _time_major_to_batch_major(window_outputs.filter_weights)
+        pred_mean = _time_major_to_batch_major(window_outputs.component_mean)
+        pred_var = _time_major_to_batch_major(window_outputs.component_var)
+        losses.append(
+            _mixture_density_projection_loss(
+                target_weights[:, start : start + horizon],
+                target_mean[:, start : start + horizon],
+                target_var[:, start : start + horizon],
+                pred_weights,
+                pred_mean,
+                pred_var,
+                density_nodes,
+                density_log_weights,
+                min_var=min_var,
+            )
+        )
+    if not losses:
+        raise ValueError("rollout distillation produced no windows")
+    return jnp.mean(jnp.stack(losses))
+
+
+def _teacher_previous_carry(
+    target_weights: jax.Array,
+    target_mean: jax.Array,
+    target_var: jax.Array,
+    target_predictive_weights: jax.Array,
+    target_predictive_mean: jax.Array,
+    target_predictive_var: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    start: int,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    if start > 0:
+        return (
+            target_weights[:, start - 1],
+            target_mean[:, start - 1],
+            target_var[:, start - 1],
+        )
+    return (
+        target_predictive_weights[:, 0],
+        target_predictive_mean[:, 0],
+        jnp.maximum(target_predictive_var[:, 0] - state_params.q, 1e-12),
+    )
+
+
+def _time_major_to_batch_major(value: jax.Array) -> jax.Array:
+    return jnp.swapaxes(value, 0, 1)
 
 
 def _run_hybrid_refined_filter(
