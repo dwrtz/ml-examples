@@ -390,6 +390,21 @@ def main() -> None:
         "hybrid_variance_ratio": None
         if hybrid_outputs is None
         else float(np.mean(hybrid_outputs["filter_var"]) / np.mean(eval_cached.reference.filter_var)),
+        "pareto_state_nll": float(jnp.mean(learned_state_nll)),
+        "pareto_predictive_y_nll": None
+        if hybrid_outputs is None
+        else float(np.mean(hybrid_predictive_y_nll)),
+        "pareto_coverage_90": float(
+            gaussian_interval_coverage(
+                eval_batch.z,
+                outputs.filter_mean,
+                outputs.filter_var,
+                z_score=1.6448536269514722,
+            )
+        ),
+        "pareto_variance_ratio": float(
+            jnp.mean(outputs.filter_var) / jnp.mean(eval_cached.reference.filter_var)
+        ),
         "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
         "coverage_90": float(
             gaussian_interval_coverage(
