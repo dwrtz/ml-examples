@@ -9,7 +9,7 @@ description: Use when turning ml-examples research notes, reports, figures, or e
 
 Publish research work from `/Users/djwurtz/proj/ml-examples` to the Hugo blog in `/Users/djwurtz/proj/mlbot-blog`.
 
-The blog source is the public GitHub repo `dwrtz/mlbot-blog` at `https://github.com/dwrtz/mlbot-blog`, and the production site is `https://mlbot.blog/`.
+The research source is the public GitHub repo `dwrtz/ml-examples` at `https://github.com/dwrtz/ml-examples`. The blog source is the public GitHub repo `dwrtz/mlbot-blog` at `https://github.com/dwrtz/mlbot-blog`, and the production site is `https://mlbot.blog/`.
 
 The agent has permission to commit, push, and publish blog posts in the blog repo when the user asks to publish or put something on the blog. Do not request additional confirmation just to push `main` and `live`; do ask if the source material seems sensitive, private, or scientifically ambiguous.
 
@@ -76,6 +76,7 @@ The output should be a reviewable Hugo leaf bundle under `content/posts/` with c
      - small code snippets that clarify the method or reproduce a key command;
      - LaTeX equations with surrounding prose that explains the math, not just displays it;
      - links to relevant external sources, docs, papers, or literature;
+     - links to relevant `ml-examples` commits, files, scripts, configs, or result reports in `https://github.com/dwrtz/ml-examples`;
      - links to related `mlbot.blog` posts, especially for sequences, progress updates, or follow-ups;
      - specific, reusable tags that connect the post to adjacent work.
    - Do not duplicate the cover image inside the Markdown body. The post template renders `images[0]` as the cover.
@@ -105,4 +106,5 @@ The output should be a reviewable Hugo leaf bundle under `content/posts/` with c
 - Code must use fenced blocks with language tags.
 - Tags should be useful for navigation, not one-off labels unless the topic is truly unique.
 - Prefer at least one relevant internal or external link when the post builds on prior work or literature.
+- Prefer stable GitHub links to important source files and, when useful, exact commits that produced or changed the result.
 - The post must pass the blog validator before being described as ready.
