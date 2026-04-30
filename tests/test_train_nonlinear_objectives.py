@@ -286,6 +286,24 @@ def test_fivo_mixture_objective_is_finite() -> None:
     assert no_resampling_objective.shape == (2,)
     assert jnp.all(jnp.isfinite(no_resampling_objective))
 
+    proposal_params = train_nonlinear._init_auxiliary_proposal_params(
+        jax.random.PRNGKey(257),
+        hidden_dim=8,
+    )
+    auxiliary_objective = train_nonlinear._nonlinear_fivo_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(258),
+        observation="x_sine",
+        num_particles=4,
+        proposal_family="learned_transition_filter_bridge",
+        proposal_params=proposal_params,
+    )
+
+    assert auxiliary_objective.shape == (2,)
+    assert jnp.all(jnp.isfinite(auxiliary_objective))
+
 
 def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
     config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")

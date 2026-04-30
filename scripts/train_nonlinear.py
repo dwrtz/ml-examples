@@ -208,10 +208,11 @@ def main() -> None:
         "local_projection",
         "fivo",
         "fivo_bridge",
+        "fivo_auxiliary",
     }:
         raise ValueError(
             "objective_family must be one of: elbo, iwae, renyi, local_projection, "
-            "fivo, fivo_bridge"
+            "fivo, fivo_bridge, fivo_auxiliary"
         )
     if num_importance_samples <= 0:
         raise ValueError("num_importance_samples must be positive")
@@ -238,6 +239,8 @@ def main() -> None:
     uses_y_mask = mask_y_probability != 0.0 or mask_y_span_probability != 0.0
     if teacher_forced and uses_y_mask:
         raise ValueError("masked-y training is not supported with teacher_forced")
+    if objective_family == "fivo_auxiliary" and posterior_family != "gaussian_mixture":
+        raise ValueError("fivo_auxiliary currently requires posterior_family='gaussian_mixture'")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     train_y_observed = _make_y_observed_mask(
@@ -288,13 +291,25 @@ def main() -> None:
         span_length=mask_y_span_length,
     )
 
-    params = _init_model_params(
+    uses_auxiliary_proposal = objective_family == "fivo_auxiliary"
+    filter_params = _init_model_params(
         str(config["model"]),
         jax.random.PRNGKey(int(config["seed"]) + 1),
         hidden_dim=int(training_config["hidden_dim"]),
         posterior_family=posterior_family,
         mixture_components=mixture_components,
         mixture_component_mean_init_span=mixture_component_mean_init_span,
+    )
+    params = (
+        {
+            "filter": filter_params,
+            "proposal": _init_auxiliary_proposal_params(
+                jax.random.PRNGKey(int(config["seed"]) + 101),
+                hidden_dim=int(training_config["hidden_dim"]),
+            ),
+        }
+        if uses_auxiliary_proposal
+        else filter_params
     )
     opt_state = init_adam(params)
 
@@ -308,10 +323,16 @@ def main() -> None:
         step_index: jax.Array,
     ) -> jax.Array:
         batch = EpisodeBatch(x=batch_x, y=batch_y, z=batch_z)
+        current_filter_params = (
+            current_params["filter"] if uses_auxiliary_proposal else current_params
+        )
+        current_proposal_params = (
+            current_params["proposal"] if uses_auxiliary_proposal else None
+        )
         outputs = (
             _run_model_teacher_forced(
                 str(config["model"]),
-                current_params,
+                current_filter_params,
                 batch,
                 state_params,
                 train_reference.filter_mean,
@@ -324,7 +345,7 @@ def main() -> None:
             if teacher_forced
             else _run_model_filter(
                 str(config["model"]),
-                current_params,
+                current_filter_params,
                 batch,
                 state_params,
                 observation=data_config.observation,
@@ -359,13 +380,16 @@ def main() -> None:
                     observation=data_config.observation,
                     num_particles=fivo_num_particles,
                     proposal_family=(
-                        "transition_filter_bridge"
+                        "learned_transition_filter_bridge"
+                        if objective_family == "fivo_auxiliary"
+                        else "transition_filter_bridge"
                         if objective_family == "fivo_bridge"
                         else "marginal_filter"
                     ),
+                    proposal_params=current_proposal_params,
                     resampling=fivo_resampling,
                 )
-                if objective_family in {"fivo", "fivo_bridge"}
+                if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary"}
                 else _nonlinear_windowed_joint_objective(
                     outputs,
                     batch,
@@ -468,7 +492,7 @@ def main() -> None:
                 raise ValueError("train_reference is required for reference rollout distillation")
             loss = loss + reference_rollout_weight * _reference_rollout_moment_loss(
                 str(config["model"]),
-                current_params,
+                current_filter_params,
                 batch,
                 state_params,
                 train_reference,
@@ -559,7 +583,7 @@ def main() -> None:
     )
     outputs = _run_model_filter(
         str(config["model"]),
-        params,
+        params["filter"] if uses_auxiliary_proposal else params,
         eval_batch,
         state_params,
         observation=eval_data_config.observation,
@@ -582,7 +606,7 @@ def main() -> None:
     if teacher_forced:
         teacher_outputs = _run_model_teacher_forced(
             str(config["model"]),
-            params,
+            params["filter"] if uses_auxiliary_proposal else params,
             eval_batch,
             state_params,
             reference.filter_mean,
@@ -641,7 +665,7 @@ def main() -> None:
         reference.predictive_var,
     )
     fivo_diagnostics = None
-    if objective_family in {"fivo", "fivo_bridge"}:
+    if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary"}:
         fivo_diagnostics = _nonlinear_fivo_diagnostics(
             outputs,
             eval_batch,
@@ -650,10 +674,13 @@ def main() -> None:
             observation=eval_data_config.observation,
             num_particles=fivo_num_particles,
             proposal_family=(
-                "transition_filter_bridge"
+                "learned_transition_filter_bridge"
+                if objective_family == "fivo_auxiliary"
+                else "transition_filter_bridge"
                 if objective_family == "fivo_bridge"
                 else "marginal_filter"
             ),
+            proposal_params=params["proposal"] if uses_auxiliary_proposal else None,
             resampling=fivo_resampling,
         )
     _, edge_cov = edge_mean_cov_from_outputs(outputs)
@@ -786,9 +813,7 @@ def main() -> None:
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    np.savez(
-        output_dir / "params.npz", **{name: np.asarray(value) for name, value in params.items()}
-    )
+    np.savez(output_dir / "params.npz", **_flatten_params_for_npz(params))
     diagnostics = {
         "x": np.asarray(eval_batch.x),
         "y": np.asarray(eval_batch.y),
@@ -851,6 +876,38 @@ def _init_model_params(
     if model == "structured_elbo_sine_mlp":
         return init_structured_mlp_params(key, hidden_dim=hidden_dim)
     return init_direct_mlp_params(key, hidden_dim=hidden_dim)
+
+
+def _init_auxiliary_proposal_params(
+    key: jax.Array,
+    *,
+    hidden_dim: int,
+    input_dim: int = 8,
+) -> dict[str, jax.Array]:
+    """Initialize residual proposal corrections around the analytic bridge proposal."""
+
+    key_w1, _ = jax.random.split(key)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = w1 * jnp.sqrt(2.0 / input_dim)
+    return {
+        "w1": w1,
+        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
+        "w2": jnp.zeros((hidden_dim, 3), dtype=jnp.float64),
+        "b2": jnp.zeros((3,), dtype=jnp.float64),
+    }
+
+
+def _flatten_params_for_npz(
+    params: dict[str, jax.Array] | dict[str, dict[str, jax.Array]],
+) -> dict[str, np.ndarray]:
+    flat = {}
+    for name, value in params.items():
+        if isinstance(value, dict):
+            for child_name, child_value in value.items():
+                flat[f"{name}.{child_name}"] = np.asarray(child_value)
+        else:
+            flat[name] = np.asarray(value)
+    return flat
 
 
 def _run_model_filter(
@@ -1379,6 +1436,7 @@ def _nonlinear_fivo_objective(
     observation: str,
     num_particles: int,
     proposal_family: str = "marginal_filter",
+    proposal_params: dict[str, jax.Array] | None = None,
     resampling: str = "every_step",
 ) -> jax.Array:
     """Sequential particle-filter marginal likelihood objective."""
@@ -1391,6 +1449,7 @@ def _nonlinear_fivo_objective(
         observation=observation,
         num_particles=num_particles,
         proposal_family=proposal_family,
+        proposal_params=proposal_params,
         resampling=resampling,
     ).objective
 
@@ -1398,6 +1457,47 @@ def _nonlinear_fivo_objective(
 class FivoDiagnostics(NamedTuple):
     objective: jax.Array
     mean_ess: jax.Array
+
+
+def _auxiliary_bridge_params(
+    proposal_params: dict[str, jax.Array],
+    prev_z: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    weights_t: jax.Array,
+    mean_t: jax.Array,
+    var_t: jax.Array,
+    bridge_mean: jax.Array,
+    bridge_var: jax.Array,
+    bridge_logits: jax.Array,
+    state_params: LinearGaussianParams,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    feature_shape = bridge_mean.shape
+    q_feature = jnp.log(broadcast_scalar_param(state_params.q, x_t))[:, None, None]
+    r_feature = jnp.log(broadcast_scalar_param(state_params.r, x_t))[:, None, None]
+    features = jnp.stack(
+        (
+            jnp.broadcast_to(prev_z[:, :, None] / 10.0, feature_shape),
+            jnp.broadcast_to(x_t[:, None, None], feature_shape),
+            jnp.broadcast_to(y_t[:, None, None], feature_shape),
+            jnp.broadcast_to(mean_t[:, None, :] / 10.0, feature_shape),
+            jnp.broadcast_to(jnp.log(jnp.maximum(var_t[:, None, :], 1e-12)), feature_shape),
+            jnp.broadcast_to(jnp.log(jnp.clip(weights_t[:, None, :], 1e-12)), feature_shape),
+            jnp.broadcast_to(q_feature, feature_shape),
+            jnp.broadcast_to(r_feature, feature_shape),
+        ),
+        axis=-1,
+    )
+    hidden = jnp.tanh(features @ proposal_params["w1"] + proposal_params["b1"])
+    raw = hidden @ proposal_params["w2"] + proposal_params["b2"]
+    mean = bridge_mean + raw[..., 0]
+    var = jnp.maximum(bridge_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)), 1e-8)
+    logits = bridge_logits + raw[..., 2]
+    return mean, var, logits
+
+
+def broadcast_scalar_param(value: jax.Array | float, target: jax.Array) -> jax.Array:
+    return jnp.asarray(value, dtype=target.dtype) + jnp.zeros_like(target)
 
 
 def _nonlinear_fivo_diagnostics(
@@ -1409,6 +1509,7 @@ def _nonlinear_fivo_diagnostics(
     observation: str,
     num_particles: int,
     proposal_family: str = "marginal_filter",
+    proposal_params: dict[str, jax.Array] | None = None,
     resampling: str = "every_step",
 ) -> FivoDiagnostics:
     """Sequential particle-filter marginal likelihood objective and ESS."""
@@ -1417,10 +1518,17 @@ def _nonlinear_fivo_diagnostics(
         raise ValueError(f"Unsupported FIVO observation: {observation}")
     if num_particles <= 0:
         raise ValueError("num_particles must be positive")
-    if proposal_family not in {"marginal_filter", "transition_filter_bridge"}:
+    if proposal_family not in {
+        "marginal_filter",
+        "transition_filter_bridge",
+        "learned_transition_filter_bridge",
+    }:
         raise ValueError(
-            "proposal_family must be one of: marginal_filter, transition_filter_bridge"
+            "proposal_family must be one of: marginal_filter, transition_filter_bridge, "
+            "learned_transition_filter_bridge"
         )
+    if proposal_family == "learned_transition_filter_bridge" and proposal_params is None:
+        raise ValueError("proposal_params is required for learned_transition_filter_bridge")
     if resampling not in {"every_step", "none", "stopgrad_resampling"}:
         raise ValueError("resampling must be one of: every_step, none, stopgrad_resampling")
 
@@ -1432,7 +1540,7 @@ def _nonlinear_fivo_diagnostics(
         dtype=batch.x.dtype,
     )
     step_keys = jax.random.split(scan_key, batch.x.shape[1])
-    proposal_params = (
+    proposal_sequence_params = (
         (
             outputs.filter_weights.transpose(1, 0, 2),
             outputs.component_mean.transpose(1, 0, 2),
@@ -1447,7 +1555,7 @@ def _nonlinear_fivo_diagnostics(
         if _is_mixture_outputs(outputs):
             x_t, y_t, weights_t, mean_t, var_t, step_key = obs
             sample_key, component_key, resample_key = jax.random.split(step_key, 3)
-            if proposal_family == "transition_filter_bridge":
+            if proposal_family in {"transition_filter_bridge", "learned_transition_filter_bridge"}:
                 bridge_var = 1.0 / (1.0 / state_params.q + 1.0 / var_t[:, None, :])
                 bridge_mean = bridge_var * (
                     prev_z[:, :, None] / state_params.q + mean_t[:, None, :] / var_t[:, None, :]
@@ -1457,6 +1565,20 @@ def _nonlinear_fivo_diagnostics(
                     mean_t[:, None, :],
                     var_t[:, None, :] + state_params.q,
                 )
+                if proposal_family == "learned_transition_filter_bridge":
+                    bridge_mean, bridge_var, bridge_logits = _auxiliary_bridge_params(
+                        proposal_params,
+                        prev_z,
+                        x_t,
+                        y_t,
+                        weights_t,
+                        mean_t,
+                        var_t,
+                        bridge_mean,
+                        bridge_var,
+                        bridge_logits,
+                        state_params,
+                    )
                 bridge_log_weights = bridge_logits - jax.nn.logsumexp(
                     bridge_logits,
                     axis=-1,
@@ -1502,6 +1624,10 @@ def _nonlinear_fivo_diagnostics(
                 )
                 z_t = bridge_mean + jnp.sqrt(bridge_var) * eps
                 log_q = _normal_log_prob(z_t, bridge_mean, bridge_var)
+            elif proposal_family == "learned_transition_filter_bridge":
+                raise ValueError(
+                    "learned_transition_filter_bridge requires gaussian_mixture outputs"
+                )
             else:
                 z_t = mean_t[:, None] + jnp.sqrt(var_t[:, None]) * eps
                 log_q = _normal_log_prob(z_t, mean_t[:, None], var_t[:, None])
@@ -1539,7 +1665,7 @@ def _nonlinear_fivo_diagnostics(
     _, (increments, ess) = jax.lax.scan(
         step,
         prev_particles,
-        (batch.x.T, batch.y.T, *proposal_params, step_keys),
+        (batch.x.T, batch.y.T, *proposal_sequence_params, step_keys),
     )
     objective = jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
     return FivoDiagnostics(objective=objective, mean_ess=jnp.mean(ess))
