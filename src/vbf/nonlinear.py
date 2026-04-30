@@ -545,6 +545,53 @@ def nonlinear_preassimilation_log_prob_y(
     return jsp.special.logsumexp(log_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(jnp.pi)
 
 
+def nonlinear_preupdate_predictive_normalizer_loss(
+    outputs: StructuredMLPOutputs | GaussianMixtureMLPOutputs,
+    batch: EpisodeBatch,
+    params: LinearGaussianParams,
+    *,
+    observation: str = "x_sine",
+    num_points: int = 32,
+    min_var: float = 1e-6,
+) -> jax.Array:
+    """Return `-log p_q(y_t | D_<t, x_t)` for the carried transition prediction.
+
+    For Gaussian-mixture filters this is an exact mixture-of-quadrature
+    normalizer: each previous component is propagated through the random-walk
+    transition and scored under the nonlinear observation likelihood.
+    """
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported nonlinear predictive normalizer: {observation}")
+    if num_points <= 0:
+        raise ValueError("num_points must be positive")
+    if isinstance(outputs, GaussianMixtureMLPOutputs):
+        log_prob = _mixture_preupdate_log_prob_y(
+            outputs,
+            batch.x,
+            batch.y,
+            params,
+            num_points=num_points,
+            min_var=min_var,
+        )
+    else:
+        prev_mean, prev_var = _previous_filter_beliefs(
+            outputs.filter_mean,
+            outputs.filter_var,
+            params,
+        )
+        log_prob = nonlinear_preassimilation_log_prob_y(
+            prev_mean,
+            prev_var,
+            batch.x,
+            batch.y,
+            params,
+            observation=observation,
+            num_points=num_points,
+        )
+    return -log_prob
+
+
 def nonlinear_tilted_projection_loss(
     outputs: StructuredMLPOutputs | GaussianMixtureMLPOutputs,
     batch: EpisodeBatch,
@@ -1033,6 +1080,29 @@ def _mixture_tilted_projection_loss(
         axis=(-2, -1),
     )
     return -log_affinity / (1.0 - alpha)
+
+
+def _mixture_preupdate_log_prob_y(
+    outputs: GaussianMixtureMLPOutputs,
+    x: jax.Array,
+    y: jax.Array,
+    params: LinearGaussianParams,
+    *,
+    num_points: int,
+    min_var: float,
+) -> jax.Array:
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(outputs, params)
+    nodes, log_weights = _hermgauss(num_points, outputs.component_mean.dtype)
+    pred_state_var = jnp.maximum(prev_var + params.q, min_var)
+    z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
+    obs_mean = x[..., None, None] * jnp.sin(z)
+    log_likelihood = _normal_log_prob(y[..., None, None], obs_mean, params.r)
+    component_log_prob = (
+        jnp.log(jnp.clip(prev_weights, min_var))
+        + jsp.special.logsumexp(log_weights + log_likelihood, axis=-1)
+        - 0.5 * jnp.log(jnp.pi)
+    )
+    return jsp.special.logsumexp(component_log_prob, axis=-1)
 
 
 def _previous_filter_beliefs(

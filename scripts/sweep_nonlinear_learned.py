@@ -54,6 +54,10 @@ class ModelSpec:
     predictive_y_ramp_fraction: float = 0.0
     predictive_y_num_samples: int = 32
     predictive_y_estimator: str = "quadrature"
+    preupdate_predictive_weight: float = 0.0
+    preupdate_predictive_num_points: int = 32
+    preupdate_predictive_start_fraction: float = 0.0
+    preupdate_predictive_ramp_fraction: float = 0.0
     local_projection_weight: float = 0.0
     local_projection_num_points: int = 32
     local_projection_likelihood_power: float = 1.0
@@ -829,6 +833,27 @@ def _selected_model_specs(
                 mixture_component_mean_init_span=6.283185307179586,
             )
         ),
+        "direct_mixture_k4_local_projection_beta_0p3_spread_2pi_preupdate_w01_late": (
+            ModelSpec(
+                key="direct_mixture_k4_local_projection_beta_0p3_spread_2pi_preupdate_w01_late",
+                label=(
+                    "direct nonlinear K4 mixture local ADF projection beta 0.3 "
+                    "spread 2pi + late pre-update predictive w0.1"
+                ),
+                objective="direct_elbo_sine_mlp",
+                reference_variance_ratio_weight=0.0,
+                elbo_weight=0.0,
+                local_projection_weight=1.0,
+                local_projection_num_points=32,
+                local_projection_likelihood_power=0.3,
+                preupdate_predictive_weight=0.1,
+                preupdate_predictive_start_fraction=0.5,
+                preupdate_predictive_ramp_fraction=0.25,
+                posterior_family="gaussian_mixture",
+                mixture_components=4,
+                mixture_component_mean_init_span=6.283185307179586,
+            )
+        ),
         "direct_mixture_k2_local_projection_beta_0p5": ModelSpec(
             key="direct_mixture_k2_local_projection_beta_0p5",
             label="direct nonlinear K2 mixture local ADF projection beta 0.5",
@@ -1112,6 +1137,10 @@ def _make_train_config(
         "fivo_resampling": spec.fivo_resampling,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
+        "preupdate_predictive_weight": spec.preupdate_predictive_weight,
+        "preupdate_predictive_num_points": spec.preupdate_predictive_num_points,
+        "preupdate_predictive_start_fraction": spec.preupdate_predictive_start_fraction,
+        "preupdate_predictive_ramp_fraction": spec.preupdate_predictive_ramp_fraction,
         "local_projection_weight": spec.local_projection_weight,
         "local_projection_num_points": spec.local_projection_num_points,
         "local_projection_likelihood_power": spec.local_projection_likelihood_power,
@@ -1196,6 +1225,14 @@ def _load_row(
         "fivo_resampling": metrics.get("fivo_resampling", "every_step"),
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
+        "preupdate_predictive_weight": metrics.get("preupdate_predictive_weight", 0.0),
+        "preupdate_predictive_num_points": metrics.get("preupdate_predictive_num_points", 32),
+        "preupdate_predictive_start_fraction": metrics.get(
+            "preupdate_predictive_start_fraction", 0.0
+        ),
+        "preupdate_predictive_ramp_fraction": metrics.get(
+            "preupdate_predictive_ramp_fraction", 0.0
+        ),
         "local_projection_weight": metrics.get("local_projection_weight", 0.0),
         "local_projection_num_points": metrics.get("local_projection_num_points", 32),
         "local_projection_likelihood_power": metrics.get(
@@ -1272,6 +1309,10 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "fivo_resampling",
         "predictive_y_num_samples",
         "predictive_y_estimator",
+        "preupdate_predictive_weight",
+        "preupdate_predictive_num_points",
+        "preupdate_predictive_start_fraction",
+        "preupdate_predictive_ramp_fraction",
         "local_projection_weight",
         "local_projection_num_points",
         "local_projection_likelihood_power",

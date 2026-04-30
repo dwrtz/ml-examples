@@ -14,6 +14,7 @@ from vbf.models.cells import (
 from vbf.nonlinear import (
     NonlinearDataConfig,
     make_nonlinear_batch,
+    nonlinear_preupdate_predictive_normalizer_loss,
     nonlinear_tilted_projection_loss,
     run_nonlinear_structured_mixture_mlp_filter,
     run_nonlinear_structured_mlp_filter,
@@ -314,3 +315,42 @@ def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
 
     assert mixture_alpha_loss.shape == batch.y.shape
     assert jnp.all(jnp.isfinite(mixture_alpha_loss))
+
+
+def test_preupdate_predictive_normalizer_loss_matches_legacy_mixture_path() -> None:
+    train_nonlinear = _load_train_module()
+    config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, state_params, seed=271)
+    mixture_params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(272),
+        hidden_dim=8,
+        num_components=2,
+        component_mean_init_span=1.0,
+    )
+    mixture_outputs = run_direct_mixture_mlp_filter(
+        mixture_params,
+        batch,
+        state_params,
+        num_components=2,
+    )
+
+    loss = nonlinear_preupdate_predictive_normalizer_loss(
+        mixture_outputs,
+        batch,
+        state_params,
+        observation="x_sine",
+        num_points=8,
+    )
+    legacy_loss = -train_nonlinear._nonlinear_mixture_preassimilation_log_prob_y(
+        mixture_outputs,
+        batch.x,
+        batch.y,
+        state_params,
+        observation="x_sine",
+        num_points=8,
+    )
+
+    assert loss.shape == batch.y.shape
+    assert jnp.all(jnp.isfinite(loss))
+    assert jnp.allclose(loss, legacy_loss, atol=1e-10)

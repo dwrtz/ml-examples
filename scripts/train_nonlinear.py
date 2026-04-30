@@ -34,6 +34,7 @@ from vbf.nonlinear import (
     make_nonlinear_batch,
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
+    nonlinear_preupdate_predictive_normalizer_loss,
     nonlinear_predictive_moments_from_filter,
     nonlinear_tilted_projection_loss,
     nonlinear_structured_mlp_step,
@@ -99,6 +100,18 @@ def main() -> None:
     predictive_y_ramp_fraction = float(training_config.get("predictive_y_ramp_fraction", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
+    preupdate_predictive_weight = float(
+        training_config.get("preupdate_predictive_weight", 0.0)
+    )
+    preupdate_predictive_num_points = int(
+        training_config.get("preupdate_predictive_num_points", predictive_y_num_samples)
+    )
+    preupdate_predictive_start_fraction = float(
+        training_config.get("preupdate_predictive_start_fraction", 0.0)
+    )
+    preupdate_predictive_ramp_fraction = float(
+        training_config.get("preupdate_predictive_ramp_fraction", 0.0)
+    )
     default_local_projection_weight = 1.0 if objective_family == "local_projection" else 0.0
     local_projection_weight = float(
         training_config.get("local_projection_weight", default_local_projection_weight)
@@ -163,6 +176,10 @@ def main() -> None:
         raise ValueError("Only fivo_resampling='every_step' is supported")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
+    if preupdate_predictive_weight < 0.0:
+        raise ValueError("preupdate_predictive_weight must be nonnegative")
+    if preupdate_predictive_num_points <= 0:
+        raise ValueError("preupdate_predictive_num_points must be positive")
     if local_projection_weight < 0.0:
         raise ValueError("local_projection_weight must be nonnegative")
     if local_projection_num_points <= 0:
@@ -177,6 +194,10 @@ def main() -> None:
         raise ValueError("predictive_y_start_fraction must be in [0, 1]")
     if not 0.0 <= predictive_y_ramp_fraction <= 1.0:
         raise ValueError("predictive_y_ramp_fraction must be in [0, 1]")
+    if not 0.0 <= preupdate_predictive_start_fraction <= 1.0:
+        raise ValueError("preupdate_predictive_start_fraction must be in [0, 1]")
+    if not 0.0 <= preupdate_predictive_ramp_fraction <= 1.0:
+        raise ValueError("preupdate_predictive_ramp_fraction must be in [0, 1]")
     if objective_family not in {
         "elbo",
         "iwae",
@@ -396,6 +417,27 @@ def main() -> None:
                 )
             )
             loss = loss - effective_predictive_y_weight * jnp.mean(predictive_y_log_prob)
+        effective_preupdate_predictive_weight = (
+            preupdate_predictive_weight
+            * _scheduled_weight(
+                step_index,
+                total_steps=int(training_config["steps"]),
+                start_fraction=preupdate_predictive_start_fraction,
+                ramp_fraction=preupdate_predictive_ramp_fraction,
+            )
+        )
+        if preupdate_predictive_weight != 0.0:
+            preupdate_predictive_loss = nonlinear_preupdate_predictive_normalizer_loss(
+                outputs,
+                batch,
+                state_params,
+                observation=data_config.observation,
+                num_points=preupdate_predictive_num_points,
+                min_var=min_var,
+            )
+            loss = loss + effective_preupdate_predictive_weight * jnp.mean(
+                preupdate_predictive_loss
+            )
         if local_projection_weight != 0.0:
             projection_loss = nonlinear_tilted_projection_loss(
                 outputs,
@@ -623,6 +665,10 @@ def main() -> None:
         "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_y_estimator": predictive_y_estimator,
+        "preupdate_predictive_weight": preupdate_predictive_weight,
+        "preupdate_predictive_num_points": preupdate_predictive_num_points,
+        "preupdate_predictive_start_fraction": preupdate_predictive_start_fraction,
+        "preupdate_predictive_ramp_fraction": preupdate_predictive_ramp_fraction,
         "local_projection_weight": local_projection_weight,
         "local_projection_num_points": local_projection_num_points,
         "local_projection_likelihood_power": local_projection_likelihood_power,
