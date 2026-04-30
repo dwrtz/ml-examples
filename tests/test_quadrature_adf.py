@@ -117,6 +117,31 @@ def test_quadrature_alias_prior_weighting_downweights_distant_aliases() -> None:
     assert np.allclose(np.sum(outputs.weights, axis=-1), 1.0)
 
 
+def test_quadrature_alias_pruning_limits_active_components() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4)
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=208)
+
+    outputs = run_quadrature_adf_filter(
+        np.asarray(batch.x),
+        np.asarray(batch.y),
+        params,
+        components=5,
+        likelihood_power=0.5,
+        init_span=4.0 * np.pi,
+        projection="mode_preserving",
+        alias_spacing=2.0 * np.pi,
+        initial_weighting="prior_alias",
+        max_active_aliases=2,
+        num_points=16,
+        em_steps=5,
+    )
+
+    active = outputs.weights > 1e-5
+    assert np.all(np.sum(active, axis=-1) <= 2)
+    assert np.allclose(np.sum(outputs.weights, axis=-1), 1.0)
+
+
 def test_zero_x_predictive_y_matches_observation_noise() -> None:
     config = NonlinearDataConfig(batch_size=2, time_steps=4, x_pattern="zero")
     params = LinearGaussianParams(q=0.1, r=0.3, m0=1.0, p0=2.0)
