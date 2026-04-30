@@ -222,3 +222,48 @@ def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
     metrics_text = metrics_path.read_text(encoding="utf-8")
     assert "predictive_carry_y_nll" in metrics_text
     assert "hybrid_predictive_y_nll" in metrics_text
+
+
+def test_quadrature_pareto_sweep_smoke(tmp_path: Path) -> None:
+    config = {
+        "name": "quadrature_pareto_test",
+        "benchmark": "nonlinear",
+        "seed": 401,
+        "data": {
+            "batch_size": 4,
+            "time_steps": 5,
+            "x_pattern": "sinusoidal",
+            "x_cycles": 1.0,
+            "x_amplitude": 1.0,
+            "x_constant": 1.0,
+            "x_missing_period": 2,
+            "observation": "x_sine",
+        },
+        "state_space": {"q": 0.1, "r": 0.1, "m0": 1.0, "p0": 2.0},
+        "reference": {"grid_min": -8.0, "grid_max": 8.0, "num_grid": 101},
+    }
+    config_path = tmp_path / "config.yaml"
+    output_dir = tmp_path / "pareto"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/sweep_quadrature_pareto.py",
+            "--configs",
+            str(config_path),
+            "--num-points",
+            "8",
+            "--em-steps",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+        check=True,
+    )
+
+    metrics_text = (output_dir / "metrics.csv").read_text(encoding="utf-8")
+    assert "pareto_state_nll" in metrics_text
+    assert "pareto_predictive_y_nll" in metrics_text
