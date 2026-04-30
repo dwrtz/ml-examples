@@ -17,7 +17,12 @@ from sweep_quadrature_adf import run_quadrature_adf_filter
 from train_nonlinear import _nonlinear_mixture_preassimilation_log_prob_y, _state_nll
 from vbf.data import LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
-from vbf.models.cells import init_direct_mixture_mlp_params, run_direct_mixture_mlp_filter
+from vbf.models.cells import (
+    init_component_mixture_mlp_params,
+    init_direct_mixture_mlp_params,
+    run_component_mixture_mlp_filter,
+    run_direct_mixture_mlp_filter,
+)
 from vbf.nonlinear import (
     GridReferenceConfig,
     NonlinearDataConfig,
@@ -50,6 +55,9 @@ def main() -> None:
     components = int(training_config.get("mixture_components", 4))
     if components <= 1:
         raise ValueError("quadrature ADF distillation expects mixture_components > 1")
+    cell_type = str(training_config.get("cell_type", "direct_mixture"))
+    if cell_type not in {"direct_mixture", "component_mixture"}:
+        raise ValueError("cell_type must be one of: direct_mixture, component_mixture")
     steps = int(training_config.get("steps", 250))
     learning_rate = float(training_config.get("learning_rate", 1e-3))
     hidden_dim = int(training_config.get("hidden_dim", 32))
@@ -94,7 +102,8 @@ def main() -> None:
         - 0.5 * jnp.log(jnp.pi)
     )
 
-    params = init_direct_mixture_mlp_params(
+    params = _init_params(
+        cell_type,
         jax.random.PRNGKey(int(config["seed"]) + 1),
         hidden_dim=hidden_dim,
         num_components=components,
@@ -107,17 +116,22 @@ def main() -> None:
 
     def loss_fn(current_params: dict[str, jax.Array]) -> jax.Array:
         batch = type(train_batch)(x=train_x, y=train_y, z=train_z)
-        outputs = run_direct_mixture_mlp_filter(
+        outputs = _run_filter(
+            cell_type,
             current_params,
             batch,
             state_params,
             num_components=components,
+            component_mean_init_span=init_span,
             min_var=min_var,
         )
         pred_weights = jnp.clip(outputs.filter_weights, min_var, 1.0)
         pred_var = jnp.maximum(outputs.component_var, min_var)
         safe_target_var = jnp.maximum(target_var, min_var)
-        target_z = target_mean[..., None] + jnp.sqrt(2.0 * safe_target_var[..., None]) * density_nodes
+        target_z = (
+            target_mean[..., None]
+            + jnp.sqrt(2.0 * safe_target_var[..., None]) * density_nodes
+        )
         target_log_mass = (
             jnp.log(jnp.clip(target_weights, min_var, 1.0))[..., None] + density_log_weights
         )
@@ -127,10 +141,15 @@ def main() -> None:
             outputs.component_mean[..., None, None, :],
             pred_var[..., None, None, :],
         )
-        density_loss = -jnp.mean(jnp.sum(jnp.exp(target_log_mass) * log_q_at_target, axis=(-2, -1)))
+        density_loss = -jnp.mean(
+            jnp.sum(jnp.exp(target_log_mass) * log_q_at_target, axis=(-2, -1))
+        )
         weight_loss = -jnp.mean(jnp.sum(target_weights * jnp.log(pred_weights), axis=-1))
         mean_loss = jnp.mean(
-            jnp.sum(target_weights * (outputs.component_mean - target_mean) ** 2 / safe_target_var, axis=-1)
+            jnp.sum(
+                target_weights * (outputs.component_mean - target_mean) ** 2 / safe_target_var,
+                axis=-1,
+            )
         )
         logvar_loss = jnp.mean(
             jnp.sum(
@@ -179,11 +198,13 @@ def main() -> None:
         use_cache=not args.no_cache,
     )
     eval_batch = eval_cached.batch
-    outputs = run_direct_mixture_mlp_filter(
+    outputs = _run_filter(
+        cell_type,
         params,
         eval_batch,
         state_params,
         num_components=components,
+        component_mean_init_span=init_span,
         min_var=min_var,
     )
     learned_predictive_mean, learned_predictive_var = nonlinear_predictive_moments_from_filter(
@@ -219,6 +240,7 @@ def main() -> None:
         "observation": eval_data_config.observation,
         "x_pattern": eval_data_config.x_pattern,
         "training_steps": steps,
+        "cell_type": cell_type,
         "posterior_family": "gaussian_mixture",
         "mixture_components": components,
         "mixture_component_mean_init_span": init_span,
@@ -242,7 +264,15 @@ def main() -> None:
         ),
         "state_nll": float(jnp.mean(learned_state_nll)),
         "reference_state_nll": float(jnp.mean(reference_state_nll)),
-        "predictive_nll": float(jnp.mean(scalar_gaussian_nll(eval_batch.y, learned_predictive_mean, learned_predictive_var))),
+        "predictive_nll": float(
+            jnp.mean(
+                scalar_gaussian_nll(
+                    eval_batch.y,
+                    learned_predictive_mean,
+                    learned_predictive_var,
+                )
+            )
+        ),
         "predictive_y_nll": float(jnp.mean(learned_predictive_y_nll)),
         "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
         "coverage_90": float(
@@ -313,6 +343,57 @@ def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
         writer = csv.writer(stream)
         writer.writerow(["step", "loss"])
         writer.writerows(history)
+
+
+def _init_params(
+    cell_type: str,
+    key: jax.Array,
+    *,
+    hidden_dim: int,
+    num_components: int,
+    component_mean_init_span: float,
+) -> dict[str, jax.Array]:
+    if cell_type == "component_mixture":
+        return init_component_mixture_mlp_params(
+            key,
+            hidden_dim=hidden_dim,
+            num_components=num_components,
+            component_mean_init_span=component_mean_init_span,
+        )
+    return init_direct_mixture_mlp_params(
+        key,
+        hidden_dim=hidden_dim,
+        num_components=num_components,
+        component_mean_init_span=component_mean_init_span,
+    )
+
+
+def _run_filter(
+    cell_type: str,
+    params: dict[str, jax.Array],
+    batch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    component_mean_init_span: float,
+    min_var: float,
+):
+    if cell_type == "component_mixture":
+        return run_component_mixture_mlp_filter(
+            params,
+            batch,
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+            component_mean_init_span=component_mean_init_span,
+        )
+    return run_direct_mixture_mlp_filter(
+        params,
+        batch,
+        state_params,
+        num_components=num_components,
+        min_var=min_var,
+    )
 
 
 def _mixture_log_prob(

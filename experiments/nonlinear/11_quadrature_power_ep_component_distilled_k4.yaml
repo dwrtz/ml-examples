@@ -1,8 +1,8 @@
-name: nonlinear_quadrature_power_ep_distilled_k4
+name: nonlinear_quadrature_power_ep_component_distilled_k4
 benchmark: nonlinear
-model: direct_mixture_quadrature_power_ep_distilled
+model: component_mixture_quadrature_power_ep_distilled
 seed: 321
-output_dir: outputs/nonlinear_quadrature_power_ep_distilled_k4
+output_dir: outputs/nonlinear_quadrature_power_ep_component_distilled_k4
 
 data:
   batch_size: 128
@@ -31,7 +31,7 @@ training:
   hidden_dim: 32
   log_every: 50
   min_var: 0.000001
-  cell_type: direct_mixture
+  cell_type: component_mixture
   mixture_components: 4
   mixture_component_mean_init_span: 6.283185307179586
   target_likelihood_power: 0.5

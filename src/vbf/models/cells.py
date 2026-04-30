@@ -133,6 +133,29 @@ def init_direct_mixture_mlp_params(
     }
 
 
+def init_component_mixture_mlp_params(
+    key: jax.Array,
+    *,
+    hidden_dim: int = 32,
+    input_dim: int = 7,
+    num_components: int = 2,
+    component_mean_init_span: float = 0.0,
+) -> dict[str, jax.Array]:
+    """Initialize a component-aware strict Gaussian-mixture filtering MLP."""
+
+    if num_components <= 0:
+        raise ValueError("num_components must be positive")
+    key_w1, _ = jax.random.split(key)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = w1 * jnp.sqrt(2.0 / input_dim)
+    return {
+        "w1": w1,
+        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
+        "w2": jnp.zeros((hidden_dim, 6), dtype=jnp.float64),
+        "b2": jnp.zeros((num_components, 6), dtype=jnp.float64),
+    }
+
+
 def init_structured_mixture_mlp_params(
     key: jax.Array,
     *,
@@ -261,6 +284,50 @@ def run_direct_mixture_mlp_filter(
     init = (
         jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
         jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
+    return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def run_component_mixture_mlp_filter(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    min_var: float = 1e-6,
+    component_mean_init_span: float = 0.0,
+) -> GaussianMixtureMLPOutputs:
+    """Run a component-aware Gaussian-mixture filter over batch-major episodes."""
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+
+    def step(
+        carry: tuple[jax.Array, jax.Array, jax.Array],
+        obs: tuple[jax.Array, jax.Array],
+    ):
+        prev_weights, prev_mean, prev_var = carry
+        x_t, y_t = obs
+        outputs = component_mixture_mlp_step(
+            mlp_params,
+            prev_weights,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            min_var=min_var,
+        )
+        next_carry = (outputs.filter_weights, outputs.component_mean, outputs.component_var)
+        return next_carry, outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64)
+        + _component_offsets(num_components, component_mean_init_span)[None, :],
         jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
@@ -491,6 +558,51 @@ def direct_mixture_mlp_step(
     )
 
 
+def component_mixture_mlp_step(
+    mlp_params: dict[str, jax.Array],
+    prev_weights: jax.Array,
+    prev_component_mean: jax.Array,
+    prev_component_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    min_var: float = 1e-6,
+) -> GaussianMixtureMLPOutputs:
+    """Compute one component-aware Gaussian-mixture filter update."""
+
+    q = broadcast_param_like(state_params.q, x_t)
+    r = broadcast_param_like(state_params.r, x_t)
+    features = jnp.stack(
+        (
+            jnp.log(jnp.clip(prev_weights, min_var)),
+            prev_component_mean,
+            jnp.log(prev_component_var),
+            jnp.broadcast_to(x_t[..., None], prev_component_mean.shape),
+            jnp.broadcast_to(y_t[..., None], prev_component_mean.shape),
+            jnp.broadcast_to(jnp.log(q)[..., None], prev_component_mean.shape),
+            jnp.broadcast_to(jnp.log(r)[..., None], prev_component_mean.shape),
+        ),
+        axis=-1,
+    )
+    hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
+    raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    filter_weights = jax.nn.softmax(raw[..., 0], axis=-1)
+    component_mean = prev_component_mean + raw[..., 1]
+    component_var = jax.nn.softplus(raw[..., 2]) + min_var
+    backward_a = raw[..., 3]
+    backward_b = prev_component_mean - backward_a * component_mean + raw[..., 4]
+    backward_var = jax.nn.softplus(raw[..., 5]) + min_var
+    return GaussianMixtureMLPOutputs(
+        filter_weights=filter_weights,
+        component_mean=component_mean,
+        component_var=component_var,
+        backward_a=backward_a,
+        backward_b=backward_b,
+        backward_var=backward_var,
+    )
+
+
 def split_head_mlp_step(
     mlp_params: dict[str, jax.Array],
     prev_mean: jax.Array,
@@ -573,6 +685,17 @@ def mixture_edge_mean_cov_from_outputs(
     row_0 = jnp.stack((var_z_t, cov), axis=-1)
     row_1 = jnp.stack((cov, var_z_tm1), axis=-1)
     return edge_mean, jnp.stack((row_0, row_1), axis=-2)
+
+
+def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
+    if component_mean_init_span == 0.0:
+        return jnp.zeros((num_components,), dtype=jnp.float64)
+    return jnp.linspace(
+        -0.5 * component_mean_init_span,
+        0.5 * component_mean_init_span,
+        num_components,
+        dtype=jnp.float64,
+    )
 
 
 def _mlp_hidden(

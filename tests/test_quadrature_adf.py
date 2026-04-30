@@ -3,10 +3,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import jax
 import numpy as np
 import yaml
 
 from vbf.data import LinearGaussianParams
+from vbf.models.cells import (
+    init_component_mixture_mlp_params,
+    run_component_mixture_mlp_filter,
+)
 from vbf.nonlinear import NonlinearDataConfig, make_nonlinear_batch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sweep_quadrature_adf.py"
@@ -85,6 +90,31 @@ def test_zero_x_predictive_y_matches_observation_noise() -> None:
     assert np.allclose(outputs.predictive_y_log_prob, expected)
 
 
+def test_component_mixture_cell_outputs_are_finite() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4)
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=204)
+    mlp_params = init_component_mixture_mlp_params(
+        jax.random.PRNGKey(205),
+        hidden_dim=4,
+        num_components=3,
+        component_mean_init_span=1.0,
+    )
+
+    outputs = run_component_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        params,
+        num_components=3,
+        component_mean_init_span=1.0,
+    )
+
+    assert outputs.filter_weights.shape == (2, 4, 3)
+    assert np.allclose(np.asarray(np.sum(outputs.filter_weights, axis=-1)), 1.0)
+    assert np.all(np.isfinite(np.asarray(outputs.component_mean)))
+    assert np.all(np.asarray(outputs.component_var) > 0.0)
+
+
 def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
     config = {
         "name": "quadrature_distillation_test",
@@ -110,6 +140,7 @@ def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
             "hidden_dim": 4,
             "log_every": 1,
             "min_var": 1e-6,
+            "cell_type": "component_mixture",
             "mixture_components": 2,
             "mixture_component_mean_init_span": 1.0,
             "target_likelihood_power": 0.5,
