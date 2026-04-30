@@ -93,17 +93,20 @@ def main() -> None:
     joint_elbo_horizon = int(training_config.get("joint_elbo_horizon", 1))
     joint_elbo_num_samples = int(training_config.get("joint_elbo_num_samples", 16))
     joint_elbo_num_windows = int(training_config.get("joint_elbo_num_windows", 8))
-    joint_elbo_window_seed_offset = int(training_config.get("joint_elbo_window_seed_offset", 80_000))
+    joint_elbo_window_seed_offset = int(
+        training_config.get("joint_elbo_window_seed_offset", 80_000)
+    )
     fivo_num_particles = int(training_config.get("fivo_num_particles", num_importance_samples))
     fivo_resampling = str(training_config.get("fivo_resampling", "every_step"))
+    fivo_twist_horizon = int(training_config.get("fivo_twist_horizon", 0))
+    fivo_twist_weight = float(training_config.get("fivo_twist_weight", 1.0))
+    fivo_twist_num_points = int(training_config.get("fivo_twist_num_points", 16))
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_start_fraction = float(training_config.get("predictive_y_start_fraction", 0.0))
     predictive_y_ramp_fraction = float(training_config.get("predictive_y_ramp_fraction", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_y_estimator = str(training_config.get("predictive_y_estimator", "quadrature"))
-    preupdate_predictive_weight = float(
-        training_config.get("preupdate_predictive_weight", 0.0)
-    )
+    preupdate_predictive_weight = float(training_config.get("preupdate_predictive_weight", 0.0))
     preupdate_predictive_num_points = int(
         training_config.get("preupdate_predictive_num_points", predictive_y_num_samples)
     )
@@ -174,9 +177,13 @@ def main() -> None:
     if fivo_num_particles <= 0:
         raise ValueError("fivo_num_particles must be positive")
     if fivo_resampling not in {"every_step", "none", "stopgrad_resampling"}:
-        raise ValueError(
-            "fivo_resampling must be one of: every_step, none, stopgrad_resampling"
-        )
+        raise ValueError("fivo_resampling must be one of: every_step, none, stopgrad_resampling")
+    if fivo_twist_horizon < 0:
+        raise ValueError("fivo_twist_horizon must be nonnegative")
+    if fivo_twist_weight < 0.0:
+        raise ValueError("fivo_twist_weight must be nonnegative")
+    if fivo_twist_num_points <= 0:
+        raise ValueError("fivo_twist_num_points must be positive")
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
     if preupdate_predictive_weight < 0.0:
@@ -209,10 +216,11 @@ def main() -> None:
         "fivo",
         "fivo_bridge",
         "fivo_auxiliary",
+        "fivo_twist",
     }:
         raise ValueError(
             "objective_family must be one of: elbo, iwae, renyi, local_projection, "
-            "fivo, fivo_bridge, fivo_auxiliary"
+            "fivo, fivo_bridge, fivo_auxiliary, fivo_twist"
         )
     if num_importance_samples <= 0:
         raise ValueError("num_importance_samples must be positive")
@@ -326,9 +334,7 @@ def main() -> None:
         current_filter_params = (
             current_params["filter"] if uses_auxiliary_proposal else current_params
         )
-        current_proposal_params = (
-            current_params["proposal"] if uses_auxiliary_proposal else None
-        )
+        current_proposal_params = current_params["proposal"] if uses_auxiliary_proposal else None
         outputs = (
             _run_model_teacher_forced(
                 str(config["model"]),
@@ -383,13 +389,16 @@ def main() -> None:
                         "learned_transition_filter_bridge"
                         if objective_family == "fivo_auxiliary"
                         else "transition_filter_bridge"
-                        if objective_family == "fivo_bridge"
+                        if objective_family in {"fivo_bridge", "fivo_twist"}
                         else "marginal_filter"
                     ),
                     proposal_params=current_proposal_params,
                     resampling=fivo_resampling,
+                    twist_horizon=fivo_twist_horizon if objective_family == "fivo_twist" else 0,
+                    twist_weight=fivo_twist_weight,
+                    twist_num_points=fivo_twist_num_points,
                 )
-                if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary"}
+                if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary", "fivo_twist"}
                 else _nonlinear_windowed_joint_objective(
                     outputs,
                     batch,
@@ -445,14 +454,11 @@ def main() -> None:
                 )
             )
             loss = loss - effective_predictive_y_weight * jnp.mean(predictive_y_log_prob)
-        effective_preupdate_predictive_weight = (
-            preupdate_predictive_weight
-            * _scheduled_weight(
-                step_index,
-                total_steps=int(training_config["steps"]),
-                start_fraction=preupdate_predictive_start_fraction,
-                ramp_fraction=preupdate_predictive_ramp_fraction,
-            )
+        effective_preupdate_predictive_weight = preupdate_predictive_weight * _scheduled_weight(
+            step_index,
+            total_steps=int(training_config["steps"]),
+            start_fraction=preupdate_predictive_start_fraction,
+            ramp_fraction=preupdate_predictive_ramp_fraction,
         )
         if preupdate_predictive_weight != 0.0:
             preupdate_predictive_loss = nonlinear_preupdate_predictive_normalizer_loss(
@@ -665,7 +671,7 @@ def main() -> None:
         reference.predictive_var,
     )
     fivo_diagnostics = None
-    if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary"}:
+    if objective_family in {"fivo", "fivo_bridge", "fivo_auxiliary", "fivo_twist"}:
         fivo_diagnostics = _nonlinear_fivo_diagnostics(
             outputs,
             eval_batch,
@@ -677,11 +683,14 @@ def main() -> None:
                 "learned_transition_filter_bridge"
                 if objective_family == "fivo_auxiliary"
                 else "transition_filter_bridge"
-                if objective_family == "fivo_bridge"
+                if objective_family in {"fivo_bridge", "fivo_twist"}
                 else "marginal_filter"
             ),
             proposal_params=params["proposal"] if uses_auxiliary_proposal else None,
             resampling=fivo_resampling,
+            twist_horizon=fivo_twist_horizon if objective_family == "fivo_twist" else 0,
+            twist_weight=fivo_twist_weight,
+            twist_num_points=fivo_twist_num_points,
         )
     _, edge_cov = edge_mean_cov_from_outputs(outputs)
     metrics = {
@@ -707,6 +716,9 @@ def main() -> None:
         "joint_elbo_window_seed_offset": joint_elbo_window_seed_offset,
         "fivo_num_particles": fivo_num_particles,
         "fivo_resampling": fivo_resampling,
+        "fivo_twist_horizon": fivo_twist_horizon,
+        "fivo_twist_weight": fivo_twist_weight,
+        "fivo_twist_num_points": fivo_twist_num_points,
         "eval_fivo_objective": None
         if fivo_diagnostics is None
         else float(jnp.mean(fivo_diagnostics.objective)),
@@ -1438,6 +1450,9 @@ def _nonlinear_fivo_objective(
     proposal_family: str = "marginal_filter",
     proposal_params: dict[str, jax.Array] | None = None,
     resampling: str = "every_step",
+    twist_horizon: int = 0,
+    twist_weight: float = 1.0,
+    twist_num_points: int = 16,
 ) -> jax.Array:
     """Sequential particle-filter marginal likelihood objective."""
 
@@ -1451,6 +1466,9 @@ def _nonlinear_fivo_objective(
         proposal_family=proposal_family,
         proposal_params=proposal_params,
         resampling=resampling,
+        twist_horizon=twist_horizon,
+        twist_weight=twist_weight,
+        twist_num_points=twist_num_points,
     ).objective
 
 
@@ -1511,6 +1529,9 @@ def _nonlinear_fivo_diagnostics(
     proposal_family: str = "marginal_filter",
     proposal_params: dict[str, jax.Array] | None = None,
     resampling: str = "every_step",
+    twist_horizon: int = 0,
+    twist_weight: float = 1.0,
+    twist_num_points: int = 16,
 ) -> FivoDiagnostics:
     """Sequential particle-filter marginal likelihood objective and ESS."""
 
@@ -1531,6 +1552,12 @@ def _nonlinear_fivo_diagnostics(
         raise ValueError("proposal_params is required for learned_transition_filter_bridge")
     if resampling not in {"every_step", "none", "stopgrad_resampling"}:
         raise ValueError("resampling must be one of: every_step, none, stopgrad_resampling")
+    if twist_horizon < 0:
+        raise ValueError("twist_horizon must be nonnegative")
+    if twist_weight < 0.0:
+        raise ValueError("twist_weight must be nonnegative")
+    if twist_num_points <= 0:
+        raise ValueError("twist_num_points must be positive")
 
     batch_size = batch.x.shape[0]
     init_key, scan_key = jax.random.split(key)
@@ -1549,11 +1576,31 @@ def _nonlinear_fivo_diagnostics(
         if _is_mixture_outputs(outputs)
         else (outputs.filter_mean.T, outputs.filter_var.T)
     )
+    future_x, future_y, future_mask = _future_observation_windows(
+        batch.x,
+        batch.y,
+        horizon=max(twist_horizon, 1),
+    )
+    future_sequence_params = (
+        future_x.transpose(1, 0, 2),
+        future_y.transpose(1, 0, 2),
+        future_mask.transpose(1, 0, 2),
+    )
 
     def step(carry: jax.Array, obs):
         prev_z = carry
         if _is_mixture_outputs(outputs):
-            x_t, y_t, weights_t, mean_t, var_t, step_key = obs
+            (
+                x_t,
+                y_t,
+                weights_t,
+                mean_t,
+                var_t,
+                future_x_t,
+                future_y_t,
+                future_mask_t,
+                step_key,
+            ) = obs
             sample_key, component_key, resample_key = jax.random.split(step_key, 3)
             if proposal_family in {"transition_filter_bridge", "learned_transition_filter_bridge"}:
                 bridge_var = 1.0 / (1.0 / state_params.q + 1.0 / var_t[:, None, :])
@@ -1590,8 +1637,7 @@ def _nonlinear_fivo_diagnostics(
                 eps = jax.random.normal(sample_key, shape=prev_z.shape, dtype=batch.x.dtype)
                 z_t = selected_mean + jnp.sqrt(selected_var) * eps
                 log_q = jax.nn.logsumexp(
-                    bridge_log_weights
-                    + _normal_log_prob(z_t[:, :, None], bridge_mean, bridge_var),
+                    bridge_log_weights + _normal_log_prob(z_t[:, :, None], bridge_mean, bridge_var),
                     axis=-1,
                 )
             else:
@@ -1610,7 +1656,7 @@ def _nonlinear_fivo_diagnostics(
                     var_t[:, None, :],
                 )
         else:
-            x_t, y_t, mean_t, var_t, step_key = obs
+            x_t, y_t, mean_t, var_t, future_x_t, future_y_t, future_mask_t, step_key = obs
             sample_key, resample_key = jax.random.split(step_key)
             eps = jax.random.normal(
                 sample_key,
@@ -1638,6 +1684,16 @@ def _nonlinear_fivo_diagnostics(
             + _normal_log_prob(z_t, prev_z, state_params.q)
             - log_q
         )
+        if twist_horizon > 0 and twist_weight != 0.0:
+            log_weights = log_weights + twist_weight * _fixed_lag_twist_log_potential(
+                z_t,
+                future_x_t,
+                future_y_t,
+                future_mask_t,
+                state_params,
+                observation=observation,
+                num_points=twist_num_points,
+            )
         increment = jax.nn.logsumexp(log_weights, axis=1) - jnp.log(num_particles)
         normalized_log_weights = log_weights - jax.nn.logsumexp(
             log_weights,
@@ -1665,10 +1721,71 @@ def _nonlinear_fivo_diagnostics(
     _, (increments, ess) = jax.lax.scan(
         step,
         prev_particles,
-        (batch.x.T, batch.y.T, *proposal_sequence_params, step_keys),
+        (
+            batch.x.T,
+            batch.y.T,
+            *proposal_sequence_params,
+            *future_sequence_params,
+            step_keys,
+        ),
     )
     objective = jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
     return FivoDiagnostics(objective=objective, mean_ess=jnp.mean(ess))
+
+
+def _future_observation_windows(
+    x: jax.Array,
+    y: jax.Array,
+    *,
+    horizon: int,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return strict future observation windows with shape batch x time x horizon."""
+
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    time_steps = x.shape[1]
+    offsets = jnp.arange(1, horizon + 1)
+    indices = jnp.arange(time_steps)[:, None] + offsets[None, :]
+    mask = indices < time_steps
+    clipped = jnp.minimum(indices, time_steps - 1)
+    return (
+        jnp.take(x, clipped, axis=1),
+        jnp.take(y, clipped, axis=1),
+        jnp.broadcast_to(mask[None, :, :], (x.shape[0], time_steps, horizon)),
+    )
+
+
+def _fixed_lag_twist_log_potential(
+    z_t: jax.Array,
+    future_x: jax.Array,
+    future_y: jax.Array,
+    future_mask: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    observation: str,
+    num_points: int,
+) -> jax.Array:
+    """Fixed-lag lookahead potential `log r(y_{t+1:t+H} | z_t)`.
+
+    The potential is used only in the training objective. It keeps test-time
+    filtering strict while letting the FIVO particles receive a smoothing-like
+    signal from future observations.
+    """
+
+    if observation != "x_sine":
+        raise ValueError(f"Unsupported twist observation: {observation}")
+    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
+    nodes = jnp.asarray(nodes_np, dtype=z_t.dtype)
+    log_quadrature_weights = jnp.log(jnp.asarray(weights_np, dtype=z_t.dtype))
+    lags = jnp.arange(1, future_x.shape[1] + 1, dtype=z_t.dtype)
+    future_var = jnp.maximum(lags * state_params.q, 1e-12)
+    z_future = z_t[:, :, None, None] + jnp.sqrt(2.0 * future_var[None, None, :, None]) * nodes
+    obs_mean = future_x[:, None, :, None] * jnp.sin(z_future)
+    log_likelihood = _normal_log_prob(future_y[:, None, :, None], obs_mean, state_params.r)
+    log_pred = jax.nn.logsumexp(log_quadrature_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(
+        jnp.pi
+    )
+    return jnp.sum(jnp.where(future_mask[:, None, :], log_pred, 0.0), axis=-1)
 
 
 def _gaussian_filter_entropy(filter_var: jax.Array) -> jax.Array:
@@ -1930,7 +2047,9 @@ def _mixture_backward_log_prob(
     log_edge = jax.nn.logsumexp(
         jnp.log(weights)
         + _normal_log_prob(z_t[..., None], mean, var)
-        + _normal_log_prob(z_tm1[..., None], backward_a * z_t[..., None] + backward_b, backward_var),
+        + _normal_log_prob(
+            z_tm1[..., None], backward_a * z_t[..., None] + backward_b, backward_var
+        ),
         axis=-1,
     )
     return log_edge - _mixture_log_prob(z_t, weights, mean, var)

@@ -304,6 +304,40 @@ def test_fivo_mixture_objective_is_finite() -> None:
     assert auxiliary_objective.shape == (2,)
     assert jnp.all(jnp.isfinite(auxiliary_objective))
 
+    twisted_objective = train_nonlinear._nonlinear_fivo_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(259),
+        observation="x_sine",
+        num_particles=4,
+        proposal_family="transition_filter_bridge",
+        twist_horizon=2,
+        twist_num_points=5,
+    )
+
+    assert twisted_objective.shape == (2,)
+    assert jnp.all(jnp.isfinite(twisted_objective))
+
+
+def test_fixed_lag_twist_uses_only_future_observations() -> None:
+    train_nonlinear = _load_train_module()
+    x = jnp.arange(10, dtype=jnp.float64).reshape(1, 10)
+    y = x + 100.0
+
+    future_x, future_y, future_mask = train_nonlinear._future_observation_windows(
+        x,
+        y,
+        horizon=3,
+    )
+
+    assert future_x.shape == (1, 10, 3)
+    assert future_y.shape == (1, 10, 3)
+    assert future_mask.shape == (1, 10, 3)
+    assert jnp.array_equal(future_x[0, 0], jnp.asarray([1.0, 2.0, 3.0]))
+    assert jnp.array_equal(future_y[0, 0], jnp.asarray([101.0, 102.0, 103.0]))
+    assert jnp.array_equal(future_mask[0, -2], jnp.asarray([True, False, False]))
+
 
 def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
     config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")

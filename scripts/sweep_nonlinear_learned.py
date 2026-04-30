@@ -49,6 +49,9 @@ class ModelSpec:
     joint_elbo_num_windows: int = 8
     fivo_num_particles: int = 16
     fivo_resampling: str = "every_step"
+    fivo_twist_horizon: int = 0
+    fivo_twist_weight: float = 1.0
+    fivo_twist_num_points: int = 16
     predictive_y_weight: float = 0.0
     predictive_y_start_fraction: float = 0.0
     predictive_y_ramp_fraction: float = 0.0
@@ -797,6 +800,36 @@ def _selected_model_specs(
             mixture_components=4,
             mixture_component_mean_init_span=6.283185307179586,
         ),
+        "direct_mixture_k4_fivo_twist_h4": ModelSpec(
+            key="direct_mixture_k4_fivo_twist_h4",
+            label="direct nonlinear K4 mixture FIVO fixed-lag twist h4 spread 2pi",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            objective_family="fivo_twist",
+            num_importance_samples=32,
+            fivo_num_particles=32,
+            fivo_twist_horizon=4,
+            posterior_family="gaussian_mixture",
+            mixture_components=4,
+            mixture_component_mean_init_span=6.283185307179586,
+        ),
+        "direct_mixture_k4_fivo_twist_h8": ModelSpec(
+            key="direct_mixture_k4_fivo_twist_h8",
+            label="direct nonlinear K4 mixture FIVO fixed-lag twist h8 spread 2pi",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            objective_family="fivo_twist",
+            num_importance_samples=32,
+            fivo_num_particles=32,
+            fivo_twist_horizon=8,
+            posterior_family="gaussian_mixture",
+            mixture_components=4,
+            mixture_component_mean_init_span=6.283185307179586,
+        ),
         "direct_mixture_k2_local_projection": ModelSpec(
             key="direct_mixture_k2_local_projection",
             label="direct nonlinear K2 mixture local ADF projection",
@@ -1038,8 +1071,7 @@ def _selected_model_specs(
         "structured_mixture_k2_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4": ModelSpec(
             key="structured_mixture_k2_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4",
             label=(
-                "EKF-residualized nonlinear K2 mixture + joint h4 w0.05, "
-                "predictive-y, masked-y h4"
+                "EKF-residualized nonlinear K2 mixture + joint h4 w0.05, predictive-y, masked-y h4"
             ),
             objective="structured_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
@@ -1207,6 +1239,9 @@ def _make_train_config(
         "joint_elbo_num_windows": spec.joint_elbo_num_windows,
         "fivo_num_particles": spec.fivo_num_particles,
         "fivo_resampling": spec.fivo_resampling,
+        "fivo_twist_horizon": spec.fivo_twist_horizon,
+        "fivo_twist_weight": spec.fivo_twist_weight,
+        "fivo_twist_num_points": spec.fivo_twist_num_points,
         "predictive_y_num_samples": spec.predictive_y_num_samples,
         "predictive_y_estimator": spec.predictive_y_estimator,
         "preupdate_predictive_weight": spec.preupdate_predictive_weight,
@@ -1295,6 +1330,9 @@ def _load_row(
         "joint_elbo_num_windows": metrics["joint_elbo_num_windows"],
         "fivo_num_particles": metrics.get("fivo_num_particles", metrics["num_importance_samples"]),
         "fivo_resampling": metrics.get("fivo_resampling", "every_step"),
+        "fivo_twist_horizon": metrics.get("fivo_twist_horizon", 0),
+        "fivo_twist_weight": metrics.get("fivo_twist_weight", 1.0),
+        "fivo_twist_num_points": metrics.get("fivo_twist_num_points", 16),
         "eval_fivo_objective": metrics.get("eval_fivo_objective"),
         "eval_fivo_mean_ess": metrics.get("eval_fivo_mean_ess"),
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
@@ -1309,9 +1347,7 @@ def _load_row(
         ),
         "local_projection_weight": metrics.get("local_projection_weight", 0.0),
         "local_projection_num_points": metrics.get("local_projection_num_points", 32),
-        "local_projection_likelihood_power": metrics.get(
-            "local_projection_likelihood_power", 1.0
-        ),
+        "local_projection_likelihood_power": metrics.get("local_projection_likelihood_power", 1.0),
         "local_projection_divergence": metrics.get("local_projection_divergence", "forward_kl"),
         "local_projection_alpha": metrics.get("local_projection_alpha", 0.5),
         "local_projection_stop_target": metrics.get("local_projection_stop_target", True),
@@ -1381,6 +1417,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "joint_elbo_num_windows",
         "fivo_num_particles",
         "fivo_resampling",
+        "fivo_twist_horizon",
+        "fivo_twist_weight",
+        "fivo_twist_num_points",
         "eval_fivo_objective",
         "eval_fivo_mean_ess",
         "predictive_y_num_samples",
