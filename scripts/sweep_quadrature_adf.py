@@ -36,6 +36,8 @@ DEFAULT_MODELS = (
     "quadrature_alias_prior_power_ep_k5_alpha_0p5",
     "quadrature_alias_prior_power_ep_k5_top3_alpha_0p5",
     "quadrature_alias_prior_power_ep_k5_top2_alpha_0p5",
+    "quadrature_alias_prior_power_ep_k5_shrink_0p85_alpha_0p5",
+    "quadrature_alias_prior_power_ep_k5_shrink_0p70_alpha_0p5",
 )
 METRICS = (
     "state_rmse",
@@ -63,6 +65,7 @@ class BaselineSpec:
     alias_spacing: float = 0.0
     initial_weighting: str = "uniform"
     max_active_aliases: int = 0
+    alias_mean_shrink: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,7 @@ def main() -> None:
                     alias_spacing=spec.alias_spacing,
                     initial_weighting=spec.initial_weighting,
                     max_active_aliases=spec.max_active_aliases,
+                    alias_mean_shrink=spec.alias_mean_shrink,
                     num_points=args.num_points,
                     em_steps=args.em_steps,
                 )
@@ -198,6 +202,7 @@ def run_quadrature_adf_filter(
     alias_spacing: float = 0.0,
     initial_weighting: str = "uniform",
     max_active_aliases: int = 0,
+    alias_mean_shrink: float = 1.0,
     num_points: int,
     em_steps: int,
     min_var: float = 1e-6,
@@ -222,6 +227,8 @@ def run_quadrature_adf_filter(
         raise ValueError("max_active_aliases must be nonnegative")
     if max_active_aliases > components:
         raise ValueError("max_active_aliases cannot exceed components")
+    if not 0.0 < alias_mean_shrink <= 1.0:
+        raise ValueError("alias_mean_shrink must be in (0, 1]")
 
     batch_size, time_steps = x.shape
     dtype = np.float64
@@ -292,6 +299,7 @@ def run_quadrature_adf_filter(
                 z_support,
                 target_log_mass.reshape(batch_size, components, num_points),
                 max_active_aliases=max_active_aliases,
+                alias_mean_shrink=alias_mean_shrink,
                 min_var=min_var,
             )
         else:
@@ -366,6 +374,7 @@ def _project_mode_preserving(
     target_log_mass: np.ndarray,
     *,
     max_active_aliases: int = 0,
+    alias_mean_shrink: float = 1.0,
     min_var: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Project each alias component independently without EM component relabeling."""
@@ -378,6 +387,9 @@ def _project_mode_preserving(
     node_weights = np.exp(target_log_mass - component_log_mass[..., None])
     means = np.sum(node_weights * z_support, axis=2)
     vars_ = np.sum(node_weights * (z_support - means[..., None]) ** 2, axis=2)
+    if alias_mean_shrink != 1.0:
+        mixture_mean = np.sum(weights * means, axis=1, keepdims=True)
+        means = mixture_mean + alias_mean_shrink * (means - mixture_mean)
     vars_ = np.maximum(vars_, min_var)
     return weights, means, vars_
 
@@ -500,6 +512,7 @@ def _metrics(
         "alias_spacing": spec.alias_spacing,
         "initial_weighting": spec.initial_weighting,
         "max_active_aliases": spec.max_active_aliases,
+        "alias_mean_shrink": spec.alias_mean_shrink,
         "num_points": num_points,
         "em_steps": em_steps,
         "q": float(state_params.q),
@@ -624,6 +637,36 @@ def _selected_specs(value: str) -> list[BaselineSpec]:
             initial_weighting="prior_alias",
             max_active_aliases=2,
         ),
+        "quadrature_alias_prior_power_ep_k5_shrink_0p85_alpha_0p5": BaselineSpec(
+            key="quadrature_alias_prior_power_ep_k5_shrink_0p85_alpha_0p5",
+            label=(
+                "reference-free quadrature prior-weighted alias-indexed "
+                "Power-EP K5 shrink 0.85 alpha 0.5 spacing 2pi"
+            ),
+            components=5,
+            likelihood_power=0.5,
+            alpha=0.5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+            initial_weighting="prior_alias",
+            alias_mean_shrink=0.85,
+        ),
+        "quadrature_alias_prior_power_ep_k5_shrink_0p70_alpha_0p5": BaselineSpec(
+            key="quadrature_alias_prior_power_ep_k5_shrink_0p70_alpha_0p5",
+            label=(
+                "reference-free quadrature prior-weighted alias-indexed "
+                "Power-EP K5 shrink 0.70 alpha 0.5 spacing 2pi"
+            ),
+            components=5,
+            likelihood_power=0.5,
+            alpha=0.5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+            initial_weighting="prior_alias",
+            alias_mean_shrink=0.70,
+        ),
     }
     keys = [item.strip() for item in value.split(",") if item.strip()]
     unknown = sorted(set(keys) - set(all_specs))
@@ -680,6 +723,7 @@ def _csv_metric_keys() -> list[str]:
         "alias_spacing",
         "initial_weighting",
         "max_active_aliases",
+        "alias_mean_shrink",
         "num_points",
         "em_steps",
         "state_nll_estimator",

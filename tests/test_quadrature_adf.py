@@ -142,6 +142,39 @@ def test_quadrature_alias_pruning_limits_active_components() -> None:
     assert np.allclose(np.sum(outputs.weights, axis=-1), 1.0)
 
 
+def test_quadrature_alias_mean_shrink_reduces_filter_variance() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4)
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=209)
+    common_kwargs = {
+        "components": 5,
+        "likelihood_power": 0.5,
+        "init_span": 4.0 * np.pi,
+        "projection": "mode_preserving",
+        "alias_spacing": 2.0 * np.pi,
+        "initial_weighting": "prior_alias",
+        "num_points": 16,
+        "em_steps": 5,
+    }
+
+    unshrunk = run_quadrature_adf_filter(
+        np.asarray(batch.x),
+        np.asarray(batch.y),
+        params,
+        **common_kwargs,
+    )
+    shrunk = run_quadrature_adf_filter(
+        np.asarray(batch.x),
+        np.asarray(batch.y),
+        params,
+        alias_mean_shrink=0.7,
+        **common_kwargs,
+    )
+
+    assert np.mean(shrunk.filter_var) < np.mean(unshrunk.filter_var)
+    assert np.allclose(np.sum(shrunk.weights, axis=-1), 1.0)
+
+
 def test_zero_x_predictive_y_matches_observation_noise() -> None:
     config = NonlinearDataConfig(batch_size=2, time_steps=4, x_pattern="zero")
     params = LinearGaussianParams(q=0.1, r=0.3, m0=1.0, p0=2.0)
