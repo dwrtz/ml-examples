@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -172,8 +173,10 @@ def main() -> None:
         raise ValueError("joint_elbo_num_windows must be positive")
     if fivo_num_particles <= 0:
         raise ValueError("fivo_num_particles must be positive")
-    if fivo_resampling != "every_step":
-        raise ValueError("Only fivo_resampling='every_step' is supported")
+    if fivo_resampling not in {"every_step", "none", "stopgrad_resampling"}:
+        raise ValueError(
+            "fivo_resampling must be one of: every_step, none, stopgrad_resampling"
+        )
     if predictive_y_num_samples <= 0:
         raise ValueError("predictive_y_num_samples must be positive")
     if preupdate_predictive_weight < 0.0:
@@ -360,6 +363,7 @@ def main() -> None:
                         if objective_family == "fivo_bridge"
                         else "marginal_filter"
                     ),
+                    resampling=fivo_resampling,
                 )
                 if objective_family in {"fivo", "fivo_bridge"}
                 else _nonlinear_windowed_joint_objective(
@@ -636,6 +640,22 @@ def main() -> None:
         reference.predictive_mean,
         reference.predictive_var,
     )
+    fivo_diagnostics = None
+    if objective_family in {"fivo", "fivo_bridge"}:
+        fivo_diagnostics = _nonlinear_fivo_diagnostics(
+            outputs,
+            eval_batch,
+            state_params,
+            jax.random.PRNGKey(eval_seed + 31_000),
+            observation=eval_data_config.observation,
+            num_particles=fivo_num_particles,
+            proposal_family=(
+                "transition_filter_bridge"
+                if objective_family == "fivo_bridge"
+                else "marginal_filter"
+            ),
+            resampling=fivo_resampling,
+        )
     _, edge_cov = edge_mean_cov_from_outputs(outputs)
     metrics = {
         "benchmark": "nonlinear",
@@ -660,6 +680,12 @@ def main() -> None:
         "joint_elbo_window_seed_offset": joint_elbo_window_seed_offset,
         "fivo_num_particles": fivo_num_particles,
         "fivo_resampling": fivo_resampling,
+        "eval_fivo_objective": None
+        if fivo_diagnostics is None
+        else float(jnp.mean(fivo_diagnostics.objective)),
+        "eval_fivo_mean_ess": None
+        if fivo_diagnostics is None
+        else float(fivo_diagnostics.mean_ess),
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_start_fraction": predictive_y_start_fraction,
         "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
@@ -1353,8 +1379,39 @@ def _nonlinear_fivo_objective(
     observation: str,
     num_particles: int,
     proposal_family: str = "marginal_filter",
+    resampling: str = "every_step",
 ) -> jax.Array:
     """Sequential particle-filter marginal likelihood objective."""
+
+    return _nonlinear_fivo_diagnostics(
+        outputs,
+        batch,
+        state_params,
+        key,
+        observation=observation,
+        num_particles=num_particles,
+        proposal_family=proposal_family,
+        resampling=resampling,
+    ).objective
+
+
+class FivoDiagnostics(NamedTuple):
+    objective: jax.Array
+    mean_ess: jax.Array
+
+
+def _nonlinear_fivo_diagnostics(
+    outputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    num_particles: int,
+    proposal_family: str = "marginal_filter",
+    resampling: str = "every_step",
+) -> FivoDiagnostics:
+    """Sequential particle-filter marginal likelihood objective and ESS."""
 
     if observation != "x_sine":
         raise ValueError(f"Unsupported FIVO observation: {observation}")
@@ -1364,6 +1421,8 @@ def _nonlinear_fivo_objective(
         raise ValueError(
             "proposal_family must be one of: marginal_filter, transition_filter_bridge"
         )
+    if resampling not in {"every_step", "none", "stopgrad_resampling"}:
+        raise ValueError("resampling must be one of: every_step, none, stopgrad_resampling")
 
     batch_size = batch.x.shape[0]
     init_key, scan_key = jax.random.split(key)
@@ -1460,22 +1519,30 @@ def _nonlinear_fivo_objective(
             keepdims=True,
         )
         resample_keys = jax.random.split(resample_key, batch_size)
-        indices = jax.vmap(
-            lambda row_key, row_logits: jax.random.categorical(
-                row_key,
-                logits=row_logits,
-                shape=(num_particles,),
-            )
-        )(resample_keys, normalized_log_weights)
-        next_z = jnp.take_along_axis(z_t, indices, axis=1)
-        return next_z, increment
+        weights = jnp.exp(normalized_log_weights)
+        ess = 1.0 / jnp.sum(weights**2, axis=1)
+        if resampling == "none":
+            next_z = z_t
+        else:
+            indices = jax.vmap(
+                lambda row_key, row_logits: jax.random.categorical(
+                    row_key,
+                    logits=row_logits,
+                    shape=(num_particles,),
+                )
+            )(resample_keys, normalized_log_weights)
+            next_z = jnp.take_along_axis(z_t, indices, axis=1)
+            if resampling == "stopgrad_resampling":
+                next_z = jax.lax.stop_gradient(next_z)
+        return next_z, (increment, ess)
 
-    _, increments = jax.lax.scan(
+    _, (increments, ess) = jax.lax.scan(
         step,
         prev_particles,
         (batch.x.T, batch.y.T, *proposal_params, step_keys),
     )
-    return jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
+    objective = jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
+    return FivoDiagnostics(objective=objective, mean_ess=jnp.mean(ess))
 
 
 def _gaussian_filter_entropy(filter_var: jax.Array) -> jax.Array:
