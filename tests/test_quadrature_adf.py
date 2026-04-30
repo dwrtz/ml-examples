@@ -1,8 +1,10 @@
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 from vbf.data import LinearGaussianParams
 from vbf.nonlinear import NonlinearDataConfig, make_nonlinear_batch
@@ -81,3 +83,56 @@ def test_zero_x_predictive_y_matches_observation_noise() -> None:
     )
 
     assert np.allclose(outputs.predictive_y_log_prob, expected)
+
+
+def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
+    config = {
+        "name": "quadrature_distillation_test",
+        "benchmark": "nonlinear",
+        "model": "direct_mixture_quadrature_power_ep_distilled",
+        "seed": 301,
+        "output_dir": str(tmp_path / "run"),
+        "data": {
+            "batch_size": 4,
+            "time_steps": 5,
+            "x_pattern": "sinusoidal",
+            "x_cycles": 1.0,
+            "x_amplitude": 1.0,
+            "x_constant": 1.0,
+            "x_missing_period": 2,
+            "observation": "x_sine",
+        },
+        "evaluation": {"seed_offset": 10000, "data": {"batch_size": 4}},
+        "state_space": {"q": 0.1, "r": 0.1, "m0": 1.0, "p0": 2.0},
+        "training": {
+            "steps": 2,
+            "learning_rate": 0.001,
+            "hidden_dim": 4,
+            "log_every": 1,
+            "min_var": 1e-6,
+            "mixture_components": 2,
+            "mixture_component_mean_init_span": 1.0,
+            "target_likelihood_power": 0.5,
+            "target_num_points": 8,
+            "target_em_steps": 2,
+            "target_density_num_points": 4,
+            "density_loss_weight": 1.0,
+        },
+        "reference": {"grid_min": -8.0, "grid_max": 8.0, "num_grid": 101},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/train_quadrature_adf_distilled.py",
+            "--config",
+            str(config_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+        check=True,
+    )
+
+    assert (tmp_path / "run" / "metrics.json").exists()

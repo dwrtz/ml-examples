@@ -1,0 +1,353 @@
+"""Train a nonlinear mixture filter by distilling quadrature ADF targets."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from pathlib import Path
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import yaml
+
+from sweep_quadrature_adf import run_quadrature_adf_filter
+from train_nonlinear import _nonlinear_mixture_preassimilation_log_prob_y, _state_nll
+from vbf.data import LinearGaussianParams
+from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
+from vbf.models.cells import init_direct_mixture_mlp_params, run_direct_mixture_mlp_filter
+from vbf.nonlinear import (
+    GridReferenceConfig,
+    NonlinearDataConfig,
+    make_nonlinear_batch,
+    nonlinear_predictive_moments_from_filter,
+)
+from vbf.nonlinear_cache import load_or_compute_nonlinear_reference
+from vbf.train import adam_update, init_adam
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--cache-dir", default="outputs/cache/nonlinear_reference")
+    parser.add_argument("--no-cache", action="store_true")
+    args = parser.parse_args()
+
+    with Path(args.config).open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+
+    data_config = NonlinearDataConfig(**config["data"])
+    eval_data_config = NonlinearDataConfig(
+        **{**config["data"], **config.get("evaluation", {}).get("data", {})}
+    )
+    state_params = LinearGaussianParams(**config["state_space"])
+    reference_config = GridReferenceConfig(**config.get("reference", {}))
+    training_config = config["training"]
+
+    components = int(training_config.get("mixture_components", 4))
+    if components <= 1:
+        raise ValueError("quadrature ADF distillation expects mixture_components > 1")
+    steps = int(training_config.get("steps", 250))
+    learning_rate = float(training_config.get("learning_rate", 1e-3))
+    hidden_dim = int(training_config.get("hidden_dim", 32))
+    min_var = float(training_config.get("min_var", 1e-6))
+    log_every = int(training_config.get("log_every", 50))
+    init_span = float(training_config.get("mixture_component_mean_init_span", 2.0 * np.pi))
+    target_likelihood_power = float(training_config.get("target_likelihood_power", 0.5))
+    target_num_points = int(training_config.get("target_num_points", 64))
+    target_em_steps = int(training_config.get("target_em_steps", 30))
+    target_density_num_points = int(training_config.get("target_density_num_points", 16))
+    density_loss_weight = float(training_config.get("density_loss_weight", 1.0))
+    weight_loss_weight = float(training_config.get("weight_loss_weight", 0.0))
+    mean_loss_weight = float(training_config.get("mean_loss_weight", 0.0))
+    logvar_loss_weight = float(training_config.get("logvar_loss_weight", 0.0))
+    moment_loss_weight = float(training_config.get("moment_loss_weight", 0.1))
+    predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
+    predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
+
+    train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
+    target = run_quadrature_adf_filter(
+        np.asarray(train_batch.x),
+        np.asarray(train_batch.y),
+        state_params,
+        components=components,
+        likelihood_power=target_likelihood_power,
+        init_span=init_span,
+        num_points=target_num_points,
+        em_steps=target_em_steps,
+        min_var=min_var,
+    )
+    target_weights = jnp.asarray(target.weights)
+    target_mean = jnp.asarray(target.component_mean)
+    target_var = jnp.asarray(target.component_var)
+    target_filter_mean = jnp.asarray(target.filter_mean)
+    target_filter_var = jnp.asarray(target.filter_var)
+    density_nodes_np, density_weights_np = np.polynomial.hermite.hermgauss(
+        target_density_num_points
+    )
+    density_nodes = jnp.asarray(density_nodes_np, dtype=target_mean.dtype)
+    density_log_weights = (
+        jnp.log(jnp.asarray(density_weights_np, dtype=target_mean.dtype))
+        - 0.5 * jnp.log(jnp.pi)
+    )
+
+    params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(int(config["seed"]) + 1),
+        hidden_dim=hidden_dim,
+        num_components=components,
+        component_mean_init_span=init_span,
+    )
+    opt_state = init_adam(params)
+    train_x = train_batch.x
+    train_y = train_batch.y
+    train_z = train_batch.z
+
+    def loss_fn(current_params: dict[str, jax.Array]) -> jax.Array:
+        batch = type(train_batch)(x=train_x, y=train_y, z=train_z)
+        outputs = run_direct_mixture_mlp_filter(
+            current_params,
+            batch,
+            state_params,
+            num_components=components,
+            min_var=min_var,
+        )
+        pred_weights = jnp.clip(outputs.filter_weights, min_var, 1.0)
+        pred_var = jnp.maximum(outputs.component_var, min_var)
+        safe_target_var = jnp.maximum(target_var, min_var)
+        target_z = target_mean[..., None] + jnp.sqrt(2.0 * safe_target_var[..., None]) * density_nodes
+        target_log_mass = (
+            jnp.log(jnp.clip(target_weights, min_var, 1.0))[..., None] + density_log_weights
+        )
+        log_q_at_target = _mixture_log_prob(
+            target_z,
+            pred_weights[..., None, None, :],
+            outputs.component_mean[..., None, None, :],
+            pred_var[..., None, None, :],
+        )
+        density_loss = -jnp.mean(jnp.sum(jnp.exp(target_log_mass) * log_q_at_target, axis=(-2, -1)))
+        weight_loss = -jnp.mean(jnp.sum(target_weights * jnp.log(pred_weights), axis=-1))
+        mean_loss = jnp.mean(
+            jnp.sum(target_weights * (outputs.component_mean - target_mean) ** 2 / safe_target_var, axis=-1)
+        )
+        logvar_loss = jnp.mean(
+            jnp.sum(
+                target_weights * (jnp.log(pred_var) - jnp.log(safe_target_var)) ** 2,
+                axis=-1,
+            )
+        )
+        moment_loss = jnp.mean((outputs.filter_mean - target_filter_mean) ** 2 / target_filter_var)
+        moment_loss = moment_loss + jnp.mean(
+            (jnp.log(outputs.filter_var) - jnp.log(target_filter_var)) ** 2
+        )
+        loss = (
+            density_loss_weight * density_loss
+            + weight_loss_weight * weight_loss
+            + mean_loss_weight * mean_loss
+            + logvar_loss_weight * logvar_loss
+            + moment_loss_weight * moment_loss
+        )
+        if predictive_y_weight != 0.0:
+            predictive_y_log_prob = _nonlinear_mixture_preassimilation_log_prob_y(
+                outputs,
+                batch.x,
+                batch.y,
+                state_params,
+                observation=data_config.observation,
+                num_points=predictive_y_num_samples,
+            )
+            loss = loss - predictive_y_weight * jnp.mean(predictive_y_log_prob)
+        return loss
+
+    value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
+    history: list[tuple[int, float]] = []
+    for step in range(1, steps + 1):
+        loss_value, grads = value_and_grad(params)
+        params, opt_state = adam_update(params, grads, opt_state, learning_rate=learning_rate)
+        if step == 1 or step % log_every == 0:
+            history.append((step, float(loss_value)))
+
+    eval_seed = int(config["seed"]) + int(config.get("evaluation", {}).get("seed_offset", 10000))
+    eval_cached = load_or_compute_nonlinear_reference(
+        eval_data_config,
+        state_params,
+        seed=eval_seed,
+        grid_config=reference_config,
+        cache_dir=Path(args.cache_dir),
+        use_cache=not args.no_cache,
+    )
+    eval_batch = eval_cached.batch
+    outputs = run_direct_mixture_mlp_filter(
+        params,
+        eval_batch,
+        state_params,
+        num_components=components,
+        min_var=min_var,
+    )
+    learned_predictive_mean, learned_predictive_var = nonlinear_predictive_moments_from_filter(
+        outputs.filter_mean,
+        outputs.filter_var,
+        eval_batch.x,
+        state_params,
+        observation=eval_data_config.observation,
+    )
+    learned_state_nll = _state_nll(outputs, eval_batch.z)
+    learned_predictive_y_nll = -_nonlinear_mixture_preassimilation_log_prob_y(
+        outputs,
+        eval_batch.x,
+        eval_batch.y,
+        state_params,
+        observation=eval_data_config.observation,
+        num_points=predictive_y_num_samples,
+    )
+    reference_state_nll = scalar_gaussian_nll(
+        eval_batch.z,
+        eval_cached.reference.filter_mean,
+        eval_cached.reference.filter_var,
+    )
+    reference_predictive_nll = scalar_gaussian_nll(
+        eval_batch.y,
+        eval_cached.reference.predictive_mean,
+        eval_cached.reference.predictive_var,
+    )
+    metrics = {
+        "benchmark": "nonlinear",
+        "objective": "quadrature_adf_distillation",
+        "seed": int(config["seed"]),
+        "observation": eval_data_config.observation,
+        "x_pattern": eval_data_config.x_pattern,
+        "training_steps": steps,
+        "posterior_family": "gaussian_mixture",
+        "mixture_components": components,
+        "mixture_component_mean_init_span": init_span,
+        "target_likelihood_power": target_likelihood_power,
+        "target_num_points": target_num_points,
+        "target_em_steps": target_em_steps,
+        "target_density_num_points": target_density_num_points,
+        "density_loss_weight": density_loss_weight,
+        "weight_loss_weight": weight_loss_weight,
+        "mean_loss_weight": mean_loss_weight,
+        "logvar_loss_weight": logvar_loss_weight,
+        "moment_loss_weight": moment_loss_weight,
+        "predictive_y_weight": predictive_y_weight,
+        "predictive_y_num_samples": predictive_y_num_samples,
+        "eval_reference_cache_hit": eval_cached.cache_hit,
+        "eval_reference_cache_path": str(eval_cached.cache_path),
+        "final_loss": float(loss_fn(params)),
+        "state_rmse": float(rmse_global(outputs.filter_mean, eval_batch.z)),
+        "reference_state_rmse": float(
+            rmse_global(eval_cached.reference.filter_mean, eval_batch.z)
+        ),
+        "state_nll": float(jnp.mean(learned_state_nll)),
+        "reference_state_nll": float(jnp.mean(reference_state_nll)),
+        "predictive_nll": float(jnp.mean(scalar_gaussian_nll(eval_batch.y, learned_predictive_mean, learned_predictive_var))),
+        "predictive_y_nll": float(jnp.mean(learned_predictive_y_nll)),
+        "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
+        "coverage_90": float(
+            gaussian_interval_coverage(
+                eval_batch.z,
+                outputs.filter_mean,
+                outputs.filter_var,
+                z_score=1.6448536269514722,
+            )
+        ),
+        "reference_coverage_90": float(
+            gaussian_interval_coverage(
+                eval_batch.z,
+                eval_cached.reference.filter_mean,
+                eval_cached.reference.filter_var,
+                z_score=1.6448536269514722,
+            )
+        ),
+        "mean_filter_variance": float(jnp.mean(outputs.filter_var)),
+        "reference_mean_filter_variance": float(jnp.mean(eval_cached.reference.filter_var)),
+        "variance_ratio": float(
+            jnp.mean(outputs.filter_var) / jnp.mean(eval_cached.reference.filter_var)
+        ),
+    }
+
+    output_dir = Path(
+        args.output_dir or config.get("output_dir", "outputs/nonlinear_quadrature_adf_distilled")
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_loss_history(output_dir / "loss_history.csv", history)
+    (output_dir / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding="utf-8",
+    )
+    (output_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    np.savez(
+        output_dir / "params.npz",
+        **{name: np.asarray(value) for name, value in params.items()},
+    )
+    np.savez(
+        output_dir / "diagnostics.npz",
+        x=np.asarray(eval_batch.x),
+        y=np.asarray(eval_batch.y),
+        z=np.asarray(eval_batch.z),
+        learned_filter_weights=np.asarray(outputs.filter_weights),
+        learned_component_mean=np.asarray(outputs.component_mean),
+        learned_component_var=np.asarray(outputs.component_var),
+        learned_filter_mean=np.asarray(outputs.filter_mean),
+        learned_filter_var=np.asarray(outputs.filter_var),
+        reference_filter_mean=np.asarray(eval_cached.reference.filter_mean),
+        reference_filter_var=np.asarray(eval_cached.reference.filter_var),
+        target_filter_weights=np.asarray(target.weights),
+        target_component_mean=np.asarray(target.component_mean),
+        target_component_var=np.asarray(target.component_var),
+        loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
+        loss_history_loss=np.asarray([loss for _, loss in history], dtype=np.float64),
+    )
+    summary_path = output_dir / "evaluation_summary.md"
+    summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
+    print(f"Wrote {summary_path}")
+
+
+def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["step", "loss"])
+        writer.writerows(history)
+
+
+def _mixture_log_prob(
+    value: jax.Array,
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+) -> jax.Array:
+    return jax.nn.logsumexp(
+        jnp.log(weights) + _normal_log_prob(value[..., None], mean, var),
+        axis=-1,
+    )
+
+
+def _normal_log_prob(
+    value: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+) -> jax.Array:
+    return -0.5 * (jnp.log(2.0 * jnp.pi) + jnp.log(var) + (value - mean) ** 2 / var)
+
+
+def _render_summary(name: str, metrics: dict[str, Any], history: list[tuple[int, float]]) -> str:
+    lines = [f"# {name}", "", "| Metric | Value |", "|---|---:|"]
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            lines.append(f"| {key} | {value:.6f} |")
+        else:
+            lines.append(f"| {key} | {value} |")
+    lines.extend(["", "## Loss History", "", "| Step | Loss |", "|---:|---:|"])
+    for step, loss in history:
+        lines.append(f"| {step} | {loss:.6f} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    main()
