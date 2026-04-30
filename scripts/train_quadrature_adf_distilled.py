@@ -104,6 +104,16 @@ def main() -> None:
     rollout_distillation_stride = int(
         training_config.get("rollout_distillation_stride", rollout_distillation_horizon)
     )
+    component_stability_weight = float(training_config.get("component_stability_weight", 0.0))
+    component_stability_mean_weight = float(
+        training_config.get("component_stability_mean_weight", 1.0)
+    )
+    component_stability_logvar_weight = float(
+        training_config.get("component_stability_logvar_weight", 0.1)
+    )
+    component_stability_weight_weight = float(
+        training_config.get("component_stability_weight_weight", 0.1)
+    )
     hybrid_refinement_steps = int(training_config.get("hybrid_refinement_steps", 0))
     if predictive_normalizer_target_weight < 0.0:
         raise ValueError("predictive_normalizer_target_weight must be nonnegative")
@@ -117,6 +127,14 @@ def main() -> None:
         raise ValueError("rollout_distillation_horizon cannot exceed data time_steps")
     if rollout_distillation_stride <= 0:
         raise ValueError("rollout_distillation_stride must be positive")
+    if component_stability_weight < 0.0:
+        raise ValueError("component_stability_weight must be nonnegative")
+    if component_stability_mean_weight < 0.0:
+        raise ValueError("component_stability_mean_weight must be nonnegative")
+    if component_stability_logvar_weight < 0.0:
+        raise ValueError("component_stability_logvar_weight must be nonnegative")
+    if component_stability_weight_weight < 0.0:
+        raise ValueError("component_stability_weight_weight must be nonnegative")
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     target = run_quadrature_adf_filter(
@@ -297,6 +315,18 @@ def main() -> None:
                 min_var=min_var,
             )
             loss = loss + rollout_distillation_weight * rollout_loss
+        if component_stability_weight != 0.0:
+            stability_loss = _component_stability_loss(
+                outputs,
+                state_params,
+                num_components=components,
+                component_mean_init_span=init_span,
+                mean_weight=component_stability_mean_weight,
+                logvar_weight=component_stability_logvar_weight,
+                weight_weight=component_stability_weight_weight,
+                min_var=min_var,
+            )
+            loss = loss + component_stability_weight * stability_loss
         return loss
 
     value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
@@ -433,6 +463,10 @@ def main() -> None:
         "rollout_distillation_weight": rollout_distillation_weight,
         "rollout_distillation_horizon": rollout_distillation_horizon,
         "rollout_distillation_stride": rollout_distillation_stride,
+        "component_stability_weight": component_stability_weight,
+        "component_stability_mean_weight": component_stability_mean_weight,
+        "component_stability_logvar_weight": component_stability_logvar_weight,
+        "component_stability_weight_weight": component_stability_weight_weight,
         "hybrid_refinement_steps": hybrid_refinement_steps,
         "eval_reference_cache_hit": eval_cached.cache_hit,
         "eval_reference_cache_path": str(eval_cached.cache_path),
@@ -761,6 +795,48 @@ def _teacher_previous_carry(
 
 def _time_major_to_batch_major(value: jax.Array) -> jax.Array:
     return jnp.swapaxes(value, 0, 1)
+
+
+def _component_stability_loss(
+    outputs,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    component_mean_init_span: float,
+    mean_weight: float,
+    logvar_weight: float,
+    weight_weight: float,
+    min_var: float,
+) -> jax.Array:
+    """Penalize component churn without assuming a specific alias geometry."""
+
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(
+        outputs,
+        state_params,
+        num_components=num_components,
+        component_mean_init_span=component_mean_init_span,
+    )
+    pred_var = jnp.maximum(prev_var + state_params.q, min_var)
+    current_var = jnp.maximum(outputs.component_var, min_var)
+    component_weights = jax.lax.stop_gradient(
+        0.5 * (jnp.clip(prev_weights, min_var, 1.0) + jnp.clip(outputs.filter_weights, min_var, 1.0))
+    )
+    component_weights = component_weights / jnp.sum(component_weights, axis=-1, keepdims=True)
+    mean_loss = jnp.sum(component_weights * (outputs.component_mean - prev_mean) ** 2 / pred_var, axis=-1)
+    logvar_loss = jnp.sum(
+        component_weights * (jnp.log(current_var) - jnp.log(pred_var)) ** 2,
+        axis=-1,
+    )
+    weight_loss = jnp.sum(
+        jnp.clip(prev_weights, min_var, 1.0)
+        * (jnp.log(jnp.clip(prev_weights, min_var, 1.0)) - jnp.log(jnp.clip(outputs.filter_weights, min_var, 1.0))),
+        axis=-1,
+    )
+    return jnp.mean(
+        mean_weight * mean_loss
+        + logvar_weight * logvar_loss
+        + weight_weight * weight_loss
+    )
 
 
 def _run_hybrid_refined_filter(
