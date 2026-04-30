@@ -32,6 +32,8 @@ DEFAULT_MODELS = (
     "quadrature_power_ep_k4_alpha_0p5",
     "quadrature_alias_k5_2pi",
     "quadrature_alias_power_ep_k5_alpha_0p5",
+    "quadrature_alias_prior_k5_2pi",
+    "quadrature_alias_prior_power_ep_k5_alpha_0p5",
 )
 METRICS = (
     "state_rmse",
@@ -57,6 +59,7 @@ class BaselineSpec:
     init_span: float = 0.0
     projection: str = "em"
     alias_spacing: float = 0.0
+    initial_weighting: str = "uniform"
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ def main() -> None:
                     init_span=spec.init_span,
                     projection=spec.projection,
                     alias_spacing=spec.alias_spacing,
+                    initial_weighting=spec.initial_weighting,
                     num_points=args.num_points,
                     em_steps=args.em_steps,
                 )
@@ -188,6 +192,7 @@ def run_quadrature_adf_filter(
     init_span: float,
     projection: str = "em",
     alias_spacing: float = 0.0,
+    initial_weighting: str = "uniform",
     num_points: int,
     em_steps: int,
     min_var: float = 1e-6,
@@ -206,10 +211,11 @@ def run_quadrature_adf_filter(
         raise ValueError("projection must be one of: em, mode_preserving")
     if projection == "mode_preserving" and components < 2:
         raise ValueError("mode_preserving projection requires components > 1")
+    if initial_weighting not in {"uniform", "prior_alias"}:
+        raise ValueError("initial_weighting must be one of: uniform, prior_alias")
 
     batch_size, time_steps = x.shape
     dtype = np.float64
-    weights = np.full((batch_size, components), 1.0 / components, dtype=dtype)
     offsets = _initial_component_offsets(
         components,
         init_span=init_span,
@@ -219,6 +225,13 @@ def run_quadrature_adf_filter(
     )
     means = np.full((batch_size, components), float(params.m0), dtype=dtype) + offsets
     vars_ = np.full((batch_size, components), float(params.p0), dtype=dtype)
+    weights = _initial_component_weights(
+        offsets,
+        params=params,
+        batch_size=batch_size,
+        initial_weighting=initial_weighting,
+        min_var=min_var,
+    )
 
     nodes, gh_weights = np.polynomial.hermite.hermgauss(num_points)
     log_gh_weights = np.log(gh_weights) - 0.5 * np.log(np.pi)
@@ -317,6 +330,25 @@ def _initial_component_offsets(
     if components > 1:
         return np.linspace(-0.5 * init_span, 0.5 * init_span, components, dtype=dtype)
     return np.zeros((1,), dtype=dtype)
+
+
+def _initial_component_weights(
+    offsets: np.ndarray,
+    *,
+    params: LinearGaussianParams,
+    batch_size: int,
+    initial_weighting: str,
+    min_var: float,
+) -> np.ndarray:
+    if initial_weighting == "uniform":
+        weights = np.full((offsets.shape[0],), 1.0 / offsets.shape[0], dtype=offsets.dtype)
+    else:
+        log_weights = _normal_log_prob(offsets, 0.0, float(params.p0))
+        log_weights = log_weights - _logsumexp(log_weights, axis=0)
+        weights = np.exp(log_weights)
+    weights = np.maximum(weights, min_var)
+    weights = weights / np.sum(weights)
+    return np.broadcast_to(weights[None, :], (batch_size, offsets.shape[0])).copy()
 
 
 def _project_mode_preserving(
@@ -443,6 +475,7 @@ def _metrics(
         "init_span": spec.init_span,
         "projection": spec.projection,
         "alias_spacing": spec.alias_spacing,
+        "initial_weighting": spec.initial_weighting,
         "num_points": num_points,
         "em_steps": em_steps,
         "q": float(state_params.q),
@@ -514,6 +547,29 @@ def _selected_specs(value: str) -> list[BaselineSpec]:
             projection="mode_preserving",
             alias_spacing=6.283185307179586,
         ),
+        "quadrature_alias_prior_k5_2pi": BaselineSpec(
+            key="quadrature_alias_prior_k5_2pi",
+            label="reference-free quadrature prior-weighted alias-indexed K5 spacing 2pi",
+            components=5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+            initial_weighting="prior_alias",
+        ),
+        "quadrature_alias_prior_power_ep_k5_alpha_0p5": BaselineSpec(
+            key="quadrature_alias_prior_power_ep_k5_alpha_0p5",
+            label=(
+                "reference-free quadrature prior-weighted alias-indexed "
+                "Power-EP K5 alpha 0.5 spacing 2pi"
+            ),
+            components=5,
+            likelihood_power=0.5,
+            alpha=0.5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+            initial_weighting="prior_alias",
+        ),
     }
     keys = [item.strip() for item in value.split(",") if item.strip()]
     unknown = sorted(set(keys) - set(all_specs))
@@ -568,6 +624,7 @@ def _csv_metric_keys() -> list[str]:
         "init_span",
         "projection",
         "alias_spacing",
+        "initial_weighting",
         "num_points",
         "em_steps",
         "state_nll_estimator",
