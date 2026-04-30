@@ -300,17 +300,27 @@ def _project_mixture_em(
     init_span: float,
     em_steps: int,
     min_var: float,
+    init_weights: np.ndarray | None = None,
+    init_mean: np.ndarray | None = None,
+    init_var: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     batch_size = z.shape[0]
     target_mean = np.sum(target_weights * z, axis=1, keepdims=True)
     target_var = np.maximum(np.sum(target_weights * (z - target_mean) ** 2, axis=1), min_var)
-    offsets = np.linspace(-0.5 * init_span, 0.5 * init_span, components, dtype=z.dtype)
-    if init_span == 0.0:
-        quantiles = (np.arange(components, dtype=z.dtype) + 0.5) / components
-        offsets = np.sqrt(target_var.mean()) * (2.0 * quantiles - 1.0)
-    means = target_mean + offsets[None, :]
-    vars_ = np.broadcast_to(target_var[:, None], (batch_size, components)).copy()
-    weights = np.full((batch_size, components), 1.0 / components, dtype=z.dtype)
+    if init_weights is None or init_mean is None or init_var is None:
+        offsets = np.linspace(-0.5 * init_span, 0.5 * init_span, components, dtype=z.dtype)
+        if init_span == 0.0:
+            quantiles = (np.arange(components, dtype=z.dtype) + 0.5) / components
+            offsets = np.sqrt(target_var.mean()) * (2.0 * quantiles - 1.0)
+        means = target_mean + offsets[None, :]
+        vars_ = np.broadcast_to(target_var[:, None], (batch_size, components)).copy()
+        weights = np.full((batch_size, components), 1.0 / components, dtype=z.dtype)
+    else:
+        weights = np.asarray(init_weights, dtype=z.dtype)
+        weights = np.maximum(weights, min_var)
+        weights = weights / np.sum(weights, axis=1, keepdims=True)
+        means = np.asarray(init_mean, dtype=z.dtype)
+        vars_ = np.maximum(np.asarray(init_var, dtype=z.dtype), min_var)
 
     for _ in range(em_steps):
         log_resp = (

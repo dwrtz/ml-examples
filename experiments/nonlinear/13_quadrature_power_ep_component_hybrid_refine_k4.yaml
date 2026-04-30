@@ -1,0 +1,54 @@
+name: nonlinear_quadrature_power_ep_component_hybrid_refine_k4
+benchmark: nonlinear
+model: component_mixture_quadrature_power_ep_hybrid_refine
+seed: 321
+output_dir: outputs/nonlinear_quadrature_power_ep_component_hybrid_refine_k4
+
+data:
+  batch_size: 128
+  time_steps: 96
+  x_pattern: sinusoidal
+  x_cycles: 3.0
+  x_amplitude: 1.0
+  x_constant: 1.0
+  x_missing_period: 4
+  observation: x_sine
+
+evaluation:
+  seed_offset: 10000
+  data:
+    batch_size: 128
+
+state_space:
+  q: 0.1
+  r: 0.1
+  m0: 1.0
+  p0: 10.0
+
+training:
+  steps: 250
+  learning_rate: 0.001
+  hidden_dim: 32
+  log_every: 50
+  min_var: 0.000001
+  cell_type: component_mixture
+  mixture_components: 4
+  mixture_component_mean_init_span: 6.283185307179586
+  target_likelihood_power: 0.5
+  target_num_points: 64
+  target_em_steps: 30
+  target_density_num_points: 16
+  density_loss_weight: 1.0
+  weight_loss_weight: 0.0
+  mean_loss_weight: 0.0
+  logvar_loss_weight: 0.0
+  moment_loss_weight: 0.1
+  predictive_y_weight: 0.0
+  predictive_y_num_samples: 32
+  predictive_carry_weight: 0.0
+  hybrid_refinement_steps: 2
+
+reference:
+  grid_min: -16.0
+  grid_max: 16.0
+  num_grid: 1601

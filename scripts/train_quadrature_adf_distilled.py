@@ -13,11 +13,20 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from sweep_quadrature_adf import run_quadrature_adf_filter
+from sweep_quadrature_adf import (
+    _logsumexp as _np_logsumexp,
+    _mixture_log_prob as _np_mixture_log_prob,
+    _mixture_mean_var as _np_mixture_mean_var,
+    _normal_log_prob as _np_normal_log_prob,
+    _project_mixture_em,
+    run_quadrature_adf_filter,
+)
 from train_nonlinear import _nonlinear_mixture_preassimilation_log_prob_y, _state_nll
 from vbf.data import LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
+    component_mixture_mlp_step,
+    direct_mixture_mlp_step,
     init_component_mixture_mlp_params,
     init_direct_mixture_mlp_params,
     run_component_mixture_mlp_filter,
@@ -76,6 +85,7 @@ def main() -> None:
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
     predictive_carry_weight = float(training_config.get("predictive_carry_weight", 0.0))
+    hybrid_refinement_steps = int(training_config.get("hybrid_refinement_steps", 0))
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     target = run_quadrature_adf_filter(
@@ -284,6 +294,27 @@ def main() -> None:
             num_points=predictive_y_num_samples,
             min_var=min_var,
         )
+    hybrid_outputs = None
+    if hybrid_refinement_steps > 0:
+        hybrid_outputs = _run_hybrid_refined_filter(
+            params["filter"],
+            cell_type,
+            eval_batch,
+            state_params,
+            num_components=components,
+            component_mean_init_span=init_span,
+            likelihood_power=target_likelihood_power,
+            num_points=target_num_points,
+            refinement_steps=hybrid_refinement_steps,
+            min_var=min_var,
+        )
+        hybrid_state_nll = -_np_mixture_log_prob(
+            np.asarray(eval_batch.z),
+            hybrid_outputs["weights"],
+            hybrid_outputs["component_mean"],
+            hybrid_outputs["component_var"],
+        )
+        hybrid_predictive_y_nll = -hybrid_outputs["predictive_y_log_prob"]
     reference_state_nll = scalar_gaussian_nll(
         eval_batch.z,
         eval_cached.reference.filter_mean,
@@ -317,6 +348,7 @@ def main() -> None:
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_num_samples": predictive_y_num_samples,
         "predictive_carry_weight": predictive_carry_weight,
+        "hybrid_refinement_steps": hybrid_refinement_steps,
         "eval_reference_cache_hit": eval_cached.cache_hit,
         "eval_reference_cache_path": str(eval_cached.cache_path),
         "final_loss": float(loss_fn(params)),
@@ -339,6 +371,25 @@ def main() -> None:
         "predictive_carry_y_nll": None
         if predictive_carry_y_nll is None
         else float(jnp.mean(predictive_carry_y_nll)),
+        "hybrid_state_nll": None
+        if hybrid_outputs is None
+        else float(np.mean(hybrid_state_nll)),
+        "hybrid_predictive_y_nll": None
+        if hybrid_outputs is None
+        else float(np.mean(hybrid_predictive_y_nll)),
+        "hybrid_coverage_90": None
+        if hybrid_outputs is None
+        else float(
+            gaussian_interval_coverage(
+                eval_batch.z,
+                jnp.asarray(hybrid_outputs["filter_mean"]),
+                jnp.asarray(hybrid_outputs["filter_var"]),
+                z_score=1.6448536269514722,
+            )
+        ),
+        "hybrid_variance_ratio": None
+        if hybrid_outputs is None
+        else float(np.mean(hybrid_outputs["filter_var"]) / np.mean(eval_cached.reference.filter_var)),
         "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
         "coverage_90": float(
             gaussian_interval_coverage(
@@ -408,6 +459,11 @@ def main() -> None:
                 "predictive_carry_component_mean": np.asarray(predictive_carry_mean),
                 "predictive_carry_component_var": np.asarray(predictive_carry_var),
             }
+        ),
+        **(
+            {}
+            if hybrid_outputs is None
+            else {f"hybrid_{name}": value for name, value in hybrid_outputs.items()}
         ),
     )
     summary_path = output_dir / "evaluation_summary.md"
@@ -488,6 +544,143 @@ def _run_filter(
         state_params,
         num_components=num_components,
         min_var=min_var,
+    )
+
+
+def _run_hybrid_refined_filter(
+    params: dict[str, jax.Array],
+    cell_type: str,
+    batch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    component_mean_init_span: float,
+    likelihood_power: float,
+    num_points: int,
+    refinement_steps: int,
+    min_var: float,
+) -> dict[str, np.ndarray]:
+    x = np.asarray(batch.x)
+    y = np.asarray(batch.y)
+    batch_size, time_steps = x.shape
+    offsets = np.asarray(_component_offsets(num_components, component_mean_init_span))
+    weights = np.full((batch_size, num_components), 1.0 / num_components)
+    means = np.full((batch_size, num_components), float(state_params.m0)) + offsets[None, :]
+    vars_ = np.full((batch_size, num_components), float(state_params.p0))
+    nodes, gh_weights = np.polynomial.hermite.hermgauss(num_points)
+    log_gh_weights = np.log(gh_weights) - 0.5 * np.log(np.pi)
+
+    weights_hist = np.zeros((batch_size, time_steps, num_components))
+    means_hist = np.zeros((batch_size, time_steps, num_components))
+    vars_hist = np.zeros((batch_size, time_steps, num_components))
+    filter_mean = np.zeros((batch_size, time_steps))
+    filter_var = np.zeros((batch_size, time_steps))
+    predictive_y_log_prob = np.zeros((batch_size, time_steps))
+
+    for t in range(time_steps):
+        pred_weights = weights
+        pred_means = means
+        pred_vars = vars_ + float(state_params.q)
+        z_support = pred_means[..., None] + np.sqrt(2.0 * pred_vars[..., None]) * nodes
+        obs_mean = x[:, t, None, None] * np.sin(z_support)
+        base_log_mass = (
+            np.log(np.clip(pred_weights, min_var, None))[..., None] + log_gh_weights
+        )
+        log_likelihood = _np_normal_log_prob(y[:, t, None, None], obs_mean, float(state_params.r))
+        predictive_y_log_prob[:, t] = _np_logsumexp(
+            (base_log_mass + log_likelihood).reshape(batch_size, -1),
+            axis=1,
+        )
+        target_log_mass = base_log_mass + likelihood_power * log_likelihood
+        target_log_mass = target_log_mass.reshape(batch_size, -1)
+        target_log_mass = target_log_mass - _np_logsumexp(target_log_mass, axis=1)[:, None]
+        target_weights = np.exp(target_log_mass)
+        target_z = z_support.reshape(batch_size, -1)
+
+        proposal = _hybrid_proposal_step(
+            params,
+            cell_type,
+            weights,
+            means,
+            vars_,
+            x[:, t],
+            y[:, t],
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+        )
+        weights, means, vars_ = _project_mixture_em(
+            target_z,
+            target_weights,
+            components=num_components,
+            init_span=component_mean_init_span,
+            em_steps=refinement_steps,
+            min_var=min_var,
+            init_weights=proposal[0],
+            init_mean=proposal[1],
+            init_var=proposal[2],
+        )
+
+        weights_hist[:, t] = weights
+        means_hist[:, t] = means
+        vars_hist[:, t] = vars_
+        filter_mean[:, t], filter_var[:, t] = _np_mixture_mean_var(weights, means, vars_)
+
+    return {
+        "weights": weights_hist,
+        "component_mean": means_hist,
+        "component_var": vars_hist,
+        "filter_mean": filter_mean,
+        "filter_var": filter_var,
+        "predictive_y_log_prob": predictive_y_log_prob,
+    }
+
+
+def _hybrid_proposal_step(
+    params: dict[str, jax.Array],
+    cell_type: str,
+    prev_weights: np.ndarray,
+    prev_mean: np.ndarray,
+    prev_var: np.ndarray,
+    x_t: np.ndarray,
+    y_t: np.ndarray,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    min_var: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    prev_weights_j = jnp.asarray(prev_weights)
+    prev_mean_j = jnp.asarray(prev_mean)
+    prev_var_j = jnp.asarray(prev_var)
+    x_t_j = jnp.asarray(x_t)
+    y_t_j = jnp.asarray(y_t)
+    if cell_type == "component_mixture":
+        outputs = component_mixture_mlp_step(
+            params,
+            prev_weights_j,
+            prev_mean_j,
+            prev_var_j,
+            x_t_j,
+            y_t_j,
+            state_params,
+            min_var=min_var,
+        )
+    else:
+        outputs = direct_mixture_mlp_step(
+            params,
+            prev_weights_j,
+            prev_mean_j,
+            prev_var_j,
+            x_t_j,
+            y_t_j,
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+        )
+    return (
+        np.asarray(outputs.filter_weights),
+        np.asarray(outputs.component_mean),
+        np.asarray(outputs.component_var),
     )
 
 
