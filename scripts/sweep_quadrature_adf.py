@@ -57,6 +57,9 @@ class BaselineSpec:
 
 @dataclass(frozen=True)
 class QuadratureAdfOutputs:
+    predictive_weights: np.ndarray
+    predictive_component_mean: np.ndarray
+    predictive_component_var: np.ndarray
     weights: np.ndarray
     component_mean: np.ndarray
     component_var: np.ndarray
@@ -134,6 +137,9 @@ def main() -> None:
                 )
                 np.savez(
                     run_dir / "diagnostics.npz",
+                    predictive_weights=outputs.predictive_weights,
+                    predictive_component_mean=outputs.predictive_component_mean,
+                    predictive_component_var=outputs.predictive_component_var,
                     weights=outputs.weights,
                     component_mean=outputs.component_mean,
                     component_var=outputs.component_var,
@@ -206,6 +212,9 @@ def run_quadrature_adf_filter(
     weights_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
     means_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
     vars_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
+    pred_weights_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
+    pred_means_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
+    pred_vars_hist = np.zeros((batch_size, time_steps, components), dtype=dtype)
     filter_mean = np.zeros((batch_size, time_steps), dtype=dtype)
     filter_var = np.zeros((batch_size, time_steps), dtype=dtype)
     predictive_mean = np.zeros((batch_size, time_steps), dtype=dtype)
@@ -216,6 +225,9 @@ def run_quadrature_adf_filter(
         pred_weights = weights
         pred_means = means
         pred_vars = vars_ + float(params.q)
+        pred_weights_hist[:, t] = pred_weights
+        pred_means_hist[:, t] = pred_means
+        pred_vars_hist[:, t] = pred_vars
         z_support = pred_means[..., None] + np.sqrt(2.0 * pred_vars[..., None]) * nodes
         obs_mean = x[:, t, None, None] * np.sin(z_support)
         base_log_mass = np.log(np.clip(pred_weights, min_var, None))[..., None] + log_gh_weights
@@ -255,6 +267,9 @@ def run_quadrature_adf_filter(
         filter_mean[:, t], filter_var[:, t] = _mixture_mean_var(weights, means, vars_)
 
     return QuadratureAdfOutputs(
+        predictive_weights=pred_weights_hist,
+        predictive_component_mean=pred_means_hist,
+        predictive_component_var=pred_vars_hist,
         weights=weights_hist,
         component_mean=means_hist,
         component_var=vars_hist,

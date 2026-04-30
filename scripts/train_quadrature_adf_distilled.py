@@ -75,6 +75,7 @@ def main() -> None:
     moment_loss_weight = float(training_config.get("moment_loss_weight", 0.1))
     predictive_y_weight = float(training_config.get("predictive_y_weight", 0.0))
     predictive_y_num_samples = int(training_config.get("predictive_y_num_samples", 32))
+    predictive_carry_weight = float(training_config.get("predictive_carry_weight", 0.0))
 
     train_batch = make_nonlinear_batch(data_config, state_params, seed=int(config["seed"]))
     target = run_quadrature_adf_filter(
@@ -93,6 +94,9 @@ def main() -> None:
     target_var = jnp.asarray(target.component_var)
     target_filter_mean = jnp.asarray(target.filter_mean)
     target_filter_var = jnp.asarray(target.filter_var)
+    target_predictive_weights = jnp.asarray(target.predictive_weights)
+    target_predictive_mean = jnp.asarray(target.predictive_component_mean)
+    target_predictive_var = jnp.asarray(target.predictive_component_var)
     density_nodes_np, density_weights_np = np.polynomial.hermite.hermgauss(
         target_density_num_points
     )
@@ -102,13 +106,22 @@ def main() -> None:
         - 0.5 * jnp.log(jnp.pi)
     )
 
-    params = _init_params(
-        cell_type,
-        jax.random.PRNGKey(int(config["seed"]) + 1),
-        hidden_dim=hidden_dim,
-        num_components=components,
-        component_mean_init_span=init_span,
-    )
+    filter_key, predictive_key = jax.random.split(jax.random.PRNGKey(int(config["seed"]) + 1))
+    params = {
+        "filter": _init_params(
+            cell_type,
+            filter_key,
+            hidden_dim=hidden_dim,
+            num_components=components,
+            component_mean_init_span=init_span,
+        )
+    }
+    if predictive_carry_weight != 0.0:
+        params["predictive"] = _init_predictive_carry_params(
+            predictive_key,
+            hidden_dim=hidden_dim,
+            num_components=components,
+        )
     opt_state = init_adam(params)
     train_x = train_batch.x
     train_y = train_batch.y
@@ -118,7 +131,7 @@ def main() -> None:
         batch = type(train_batch)(x=train_x, y=train_y, z=train_z)
         outputs = _run_filter(
             cell_type,
-            current_params,
+            current_params["filter"],
             batch,
             state_params,
             num_components=components,
@@ -168,6 +181,28 @@ def main() -> None:
             + logvar_loss_weight * logvar_loss
             + moment_loss_weight * moment_loss
         )
+        if predictive_carry_weight != 0.0:
+            pred_weights_carry, pred_mean_carry, pred_var_carry = _run_predictive_carry_head(
+                current_params["predictive"],
+                outputs,
+                batch.x,
+                state_params,
+                num_components=components,
+                component_mean_init_span=init_span,
+                min_var=min_var,
+            )
+            predictive_carry_loss = _mixture_density_projection_loss(
+                target_predictive_weights,
+                target_predictive_mean,
+                target_predictive_var,
+                pred_weights_carry,
+                pred_mean_carry,
+                pred_var_carry,
+                density_nodes,
+                density_log_weights,
+                min_var=min_var,
+            )
+            loss = loss + predictive_carry_weight * predictive_carry_loss
         if predictive_y_weight != 0.0:
             predictive_y_log_prob = _nonlinear_mixture_preassimilation_log_prob_y(
                 outputs,
@@ -200,7 +235,7 @@ def main() -> None:
     eval_batch = eval_cached.batch
     outputs = _run_filter(
         cell_type,
-        params,
+        params["filter"],
         eval_batch,
         state_params,
         num_components=components,
@@ -223,6 +258,32 @@ def main() -> None:
         observation=eval_data_config.observation,
         num_points=predictive_y_num_samples,
     )
+    predictive_carry_y_nll = None
+    predictive_carry_weights = None
+    predictive_carry_mean = None
+    predictive_carry_var = None
+    if predictive_carry_weight != 0.0:
+        predictive_carry_weights, predictive_carry_mean, predictive_carry_var = (
+            _run_predictive_carry_head(
+                params["predictive"],
+                outputs,
+                eval_batch.x,
+                state_params,
+                num_components=components,
+                component_mean_init_span=init_span,
+                min_var=min_var,
+            )
+        )
+        predictive_carry_y_nll = -_mixture_preassimilation_log_prob_y_from_components(
+            predictive_carry_weights,
+            predictive_carry_mean,
+            predictive_carry_var,
+            eval_batch.x,
+            eval_batch.y,
+            state_params,
+            num_points=predictive_y_num_samples,
+            min_var=min_var,
+        )
     reference_state_nll = scalar_gaussian_nll(
         eval_batch.z,
         eval_cached.reference.filter_mean,
@@ -255,6 +316,7 @@ def main() -> None:
         "moment_loss_weight": moment_loss_weight,
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_num_samples": predictive_y_num_samples,
+        "predictive_carry_weight": predictive_carry_weight,
         "eval_reference_cache_hit": eval_cached.cache_hit,
         "eval_reference_cache_path": str(eval_cached.cache_path),
         "final_loss": float(loss_fn(params)),
@@ -274,6 +336,9 @@ def main() -> None:
             )
         ),
         "predictive_y_nll": float(jnp.mean(learned_predictive_y_nll)),
+        "predictive_carry_y_nll": None
+        if predictive_carry_y_nll is None
+        else float(jnp.mean(predictive_carry_y_nll)),
         "reference_predictive_nll": float(jnp.mean(reference_predictive_nll)),
         "coverage_90": float(
             gaussian_interval_coverage(
@@ -313,7 +378,7 @@ def main() -> None:
     )
     np.savez(
         output_dir / "params.npz",
-        **{name: np.asarray(value) for name, value in params.items()},
+        **_flatten_params_for_npz(params),
     )
     np.savez(
         output_dir / "diagnostics.npz",
@@ -330,8 +395,20 @@ def main() -> None:
         target_filter_weights=np.asarray(target.weights),
         target_component_mean=np.asarray(target.component_mean),
         target_component_var=np.asarray(target.component_var),
+        target_predictive_weights=np.asarray(target.predictive_weights),
+        target_predictive_component_mean=np.asarray(target.predictive_component_mean),
+        target_predictive_component_var=np.asarray(target.predictive_component_var),
         loss_history_step=np.asarray([step for step, _ in history], dtype=np.int64),
         loss_history_loss=np.asarray([loss for _, loss in history], dtype=np.float64),
+        **(
+            {}
+            if predictive_carry_weights is None
+            else {
+                "predictive_carry_weights": np.asarray(predictive_carry_weights),
+                "predictive_carry_component_mean": np.asarray(predictive_carry_mean),
+                "predictive_carry_component_var": np.asarray(predictive_carry_var),
+            }
+        ),
     )
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
@@ -343,6 +420,24 @@ def _write_loss_history(path: Path, history: list[tuple[int, float]]) -> None:
         writer = csv.writer(stream)
         writer.writerow(["step", "loss"])
         writer.writerows(history)
+
+
+def _init_predictive_carry_params(
+    key: jax.Array,
+    *,
+    hidden_dim: int,
+    num_components: int,
+) -> dict[str, jax.Array]:
+    input_dim = 6
+    key_w1, _ = jax.random.split(key)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = w1 * jnp.sqrt(2.0 / input_dim)
+    return {
+        "w1": w1,
+        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
+        "w2": jnp.zeros((hidden_dim, 3), dtype=jnp.float64),
+        "b2": jnp.zeros((num_components, 3), dtype=jnp.float64),
+    }
 
 
 def _init_params(
@@ -396,6 +491,88 @@ def _run_filter(
     )
 
 
+def _run_predictive_carry_head(
+    params: dict[str, jax.Array],
+    outputs,
+    x: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    component_mean_init_span: float,
+    min_var: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(
+        outputs,
+        state_params,
+        num_components=num_components,
+        component_mean_init_span=component_mean_init_span,
+    )
+    q = jnp.asarray(state_params.q, dtype=x.dtype)
+    r = jnp.asarray(state_params.r, dtype=x.dtype)
+    features = jnp.stack(
+        (
+            jnp.log(jnp.clip(prev_weights, min_var)),
+            prev_mean,
+            jnp.log(prev_var),
+            jnp.broadcast_to(x[..., None], prev_mean.shape),
+            jnp.broadcast_to(jnp.log(q), prev_mean.shape),
+            jnp.broadcast_to(jnp.log(r), prev_mean.shape),
+        ),
+        axis=-1,
+    )
+    hidden = jnp.tanh(features @ params["w1"] + params["b1"])
+    raw = hidden @ params["w2"] + params["b2"]
+    predictive_weights = jax.nn.softmax(jnp.log(jnp.clip(prev_weights, min_var)) + raw[..., 0])
+    predictive_mean = prev_mean + raw[..., 1]
+    predictive_var = (prev_var + q) * jnp.exp(jnp.clip(raw[..., 2], -5.0, 5.0)) + min_var
+    return predictive_weights, predictive_mean, predictive_var
+
+
+def _previous_mixture_filter_beliefs(
+    outputs,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    component_mean_init_span: float,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    batch_size = outputs.component_mean.shape[0]
+    offsets = _component_offsets(num_components, component_mean_init_span)
+    initial_weights = jnp.full(
+        (batch_size, 1, num_components),
+        1.0 / num_components,
+        dtype=outputs.filter_weights.dtype,
+    )
+    initial_mean = (
+        jnp.full(
+            (batch_size, 1, num_components),
+            state_params.m0,
+            dtype=outputs.component_mean.dtype,
+        )
+        + offsets[None, None, :]
+    )
+    initial_var = jnp.full(
+        (batch_size, 1, num_components),
+        state_params.p0,
+        dtype=outputs.component_var.dtype,
+    )
+    return (
+        jnp.concatenate((initial_weights, outputs.filter_weights[:, :-1]), axis=1),
+        jnp.concatenate((initial_mean, outputs.component_mean[:, :-1]), axis=1),
+        jnp.concatenate((initial_var, outputs.component_var[:, :-1]), axis=1),
+    )
+
+
+def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
+    if component_mean_init_span == 0.0:
+        return jnp.zeros((num_components,), dtype=jnp.float64)
+    return jnp.linspace(
+        -0.5 * component_mean_init_span,
+        0.5 * component_mean_init_span,
+        num_components,
+        dtype=jnp.float64,
+    )
+
+
 def _mixture_log_prob(
     value: jax.Array,
     weights: jax.Array,
@@ -406,6 +583,69 @@ def _mixture_log_prob(
         jnp.log(weights) + _normal_log_prob(value[..., None], mean, var),
         axis=-1,
     )
+
+
+def _mixture_density_projection_loss(
+    target_weights: jax.Array,
+    target_mean: jax.Array,
+    target_var: jax.Array,
+    pred_weights: jax.Array,
+    pred_mean: jax.Array,
+    pred_var: jax.Array,
+    density_nodes: jax.Array,
+    density_log_weights: jax.Array,
+    *,
+    min_var: float,
+) -> jax.Array:
+    safe_target_var = jnp.maximum(target_var, min_var)
+    target_z = target_mean[..., None] + jnp.sqrt(2.0 * safe_target_var[..., None]) * density_nodes
+    target_log_mass = (
+        jnp.log(jnp.clip(target_weights, min_var, 1.0))[..., None] + density_log_weights
+    )
+    log_q_at_target = _mixture_log_prob(
+        target_z,
+        jnp.clip(pred_weights, min_var, 1.0)[..., None, None, :],
+        pred_mean[..., None, None, :],
+        jnp.maximum(pred_var, min_var)[..., None, None, :],
+    )
+    return -jnp.mean(jnp.sum(jnp.exp(target_log_mass) * log_q_at_target, axis=(-2, -1)))
+
+
+def _mixture_preassimilation_log_prob_y_from_components(
+    weights: jax.Array,
+    mean: jax.Array,
+    var: jax.Array,
+    x: jax.Array,
+    y: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    num_points: int,
+    min_var: float,
+) -> jax.Array:
+    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
+    nodes = jnp.asarray(nodes_np, dtype=mean.dtype)
+    log_quadrature_weights = jnp.log(jnp.asarray(weights_np, dtype=mean.dtype))
+    safe_var = jnp.maximum(var, min_var)
+    z = mean[..., None] + jnp.sqrt(2.0 * safe_var[..., None]) * nodes
+    obs_mean = x[..., None, None] * jnp.sin(z)
+    log_likelihood = _normal_log_prob(y[..., None, None], obs_mean, state_params.r)
+    component_log_prob = (
+        jnp.log(jnp.clip(weights, min_var, 1.0))
+        + jax.nn.logsumexp(log_quadrature_weights + log_likelihood, axis=-1)
+        - 0.5 * jnp.log(jnp.pi)
+    )
+    return jax.nn.logsumexp(component_log_prob, axis=-1)
+
+
+def _flatten_params_for_npz(params: dict[str, Any]) -> dict[str, np.ndarray]:
+    flattened = {}
+    for group_name, group in params.items():
+        if isinstance(group, dict):
+            for name, value in group.items():
+                flattened[f"{group_name}/{name}"] = np.asarray(value)
+        else:
+            flattened[group_name] = np.asarray(group)
+    return flattened
 
 
 def _normal_log_prob(

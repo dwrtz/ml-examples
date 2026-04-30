@@ -148,6 +148,7 @@ def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
             "target_em_steps": 2,
             "target_density_num_points": 4,
             "density_loss_weight": 1.0,
+            "predictive_carry_weight": 1.0,
         },
         "reference": {"grid_min": -8.0, "grid_max": 8.0, "num_grid": 101},
     }
@@ -166,4 +167,6 @@ def test_quadrature_adf_distillation_trainer_smoke(tmp_path: Path) -> None:
         check=True,
     )
 
-    assert (tmp_path / "run" / "metrics.json").exists()
+    metrics_path = tmp_path / "run" / "metrics.json"
+    assert metrics_path.exists()
+    assert "predictive_carry_y_nll" in metrics_path.read_text(encoding="utf-8")
