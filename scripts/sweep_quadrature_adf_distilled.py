@@ -161,13 +161,22 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
     ]
     for row in rows:
         lines.append(
-            "| {x_pattern} | {state_nll:.6f} | {predictive_y_nll:.6f} | "
-            "{hybrid_state_nll:.6f} | {hybrid_predictive_y_nll:.6f} | "
-            "{pareto_state_nll:.6f} | {pareto_predictive_y_nll:.6f} | "
-            "{coverage_90:.6f} | {variance_ratio:.6f} |".format(**row)
+            f"| {row['x_pattern']} | {_fmt_metric(row['state_nll'])} | "
+            f"{_fmt_metric(row['predictive_y_nll'])} | "
+            f"{_fmt_metric(row['hybrid_state_nll'])} | "
+            f"{_fmt_metric(row['hybrid_predictive_y_nll'])} | "
+            f"{_fmt_metric(row['pareto_state_nll'])} | "
+            f"{_fmt_metric(row['pareto_predictive_y_nll'])} | "
+            f"{_fmt_metric(row['coverage_90'])} | {_fmt_metric(row['variance_ratio'])} |"
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _fmt_metric(value: Any) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.6f}"
 
 
 def _parse_config_paths(value: str) -> list[Path]:
