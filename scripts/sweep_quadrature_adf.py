@@ -30,6 +30,8 @@ DEFAULT_MODELS = (
     "quadrature_adf_k2",
     "quadrature_adf_k4_2pi",
     "quadrature_power_ep_k4_alpha_0p5",
+    "quadrature_alias_k5_2pi",
+    "quadrature_alias_power_ep_k5_alpha_0p5",
 )
 METRICS = (
     "state_rmse",
@@ -53,6 +55,8 @@ class BaselineSpec:
     likelihood_power: float = 1.0
     alpha: float | None = None
     init_span: float = 0.0
+    projection: str = "em"
+    alias_spacing: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,8 @@ def main() -> None:
                     components=spec.components,
                     likelihood_power=spec.likelihood_power,
                     init_span=spec.init_span,
+                    projection=spec.projection,
+                    alias_spacing=spec.alias_spacing,
                     num_points=args.num_points,
                     em_steps=args.em_steps,
                 )
@@ -180,6 +186,8 @@ def run_quadrature_adf_filter(
     components: int,
     likelihood_power: float,
     init_span: float,
+    projection: str = "em",
+    alias_spacing: float = 0.0,
     num_points: int,
     em_steps: int,
     min_var: float = 1e-6,
@@ -194,14 +202,20 @@ def run_quadrature_adf_filter(
         raise ValueError("num_points must be positive")
     if em_steps <= 0:
         raise ValueError("em_steps must be positive")
+    if projection not in {"em", "mode_preserving"}:
+        raise ValueError("projection must be one of: em, mode_preserving")
+    if projection == "mode_preserving" and components < 2:
+        raise ValueError("mode_preserving projection requires components > 1")
 
     batch_size, time_steps = x.shape
     dtype = np.float64
     weights = np.full((batch_size, components), 1.0 / components, dtype=dtype)
-    offsets = (
-        np.linspace(-0.5 * init_span, 0.5 * init_span, components, dtype=dtype)
-        if components > 1
-        else np.zeros((1,), dtype=dtype)
+    offsets = _initial_component_offsets(
+        components,
+        init_span=init_span,
+        projection=projection,
+        alias_spacing=alias_spacing,
+        dtype=dtype,
     )
     means = np.full((batch_size, components), float(params.m0), dtype=dtype) + offsets
     vars_ = np.full((batch_size, components), float(params.p0), dtype=dtype)
@@ -251,6 +265,12 @@ def run_quadrature_adf_filter(
 
         if components == 1:
             weights, means, vars_ = _project_gaussian(target_z, target_weights, min_var=min_var)
+        elif projection == "mode_preserving":
+            weights, means, vars_ = _project_mode_preserving(
+                z_support,
+                target_log_mass.reshape(batch_size, components, num_points),
+                min_var=min_var,
+            )
         else:
             weights, means, vars_ = _project_mixture_em(
                 target_z,
@@ -279,6 +299,43 @@ def run_quadrature_adf_filter(
         predictive_var=predictive_var,
         predictive_y_log_prob=predictive_y_log_prob,
     )
+
+
+def _initial_component_offsets(
+    components: int,
+    *,
+    init_span: float,
+    projection: str,
+    alias_spacing: float,
+    dtype: type[np.float64],
+) -> np.ndarray:
+    if projection == "mode_preserving":
+        spacing = alias_spacing if alias_spacing != 0.0 else init_span
+        if spacing <= 0.0:
+            raise ValueError("mode_preserving projection requires positive alias_spacing or init_span")
+        return (np.arange(components, dtype=dtype) - 0.5 * (components - 1)) * spacing
+    if components > 1:
+        return np.linspace(-0.5 * init_span, 0.5 * init_span, components, dtype=dtype)
+    return np.zeros((1,), dtype=dtype)
+
+
+def _project_mode_preserving(
+    z_support: np.ndarray,
+    target_log_mass: np.ndarray,
+    *,
+    min_var: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project each alias component independently without EM component relabeling."""
+
+    component_log_mass = _logsumexp(target_log_mass, axis=2)
+    weights = np.exp(component_log_mass)
+    weights = np.maximum(weights, min_var)
+    weights = weights / np.sum(weights, axis=1, keepdims=True)
+    node_weights = np.exp(target_log_mass - component_log_mass[..., None])
+    means = np.sum(node_weights * z_support, axis=2)
+    vars_ = np.sum(node_weights * (z_support - means[..., None]) ** 2, axis=2)
+    vars_ = np.maximum(vars_, min_var)
+    return weights, means, vars_
 
 
 def _project_gaussian(
@@ -384,6 +441,8 @@ def _metrics(
         "likelihood_power": spec.likelihood_power,
         "alpha": spec.alpha,
         "init_span": spec.init_span,
+        "projection": spec.projection,
+        "alias_spacing": spec.alias_spacing,
         "num_points": num_points,
         "em_steps": em_steps,
         "q": float(state_params.q),
@@ -437,6 +496,24 @@ def _selected_specs(value: str) -> list[BaselineSpec]:
             alpha=0.5,
             init_span=6.283185307179586,
         ),
+        "quadrature_alias_k5_2pi": BaselineSpec(
+            key="quadrature_alias_k5_2pi",
+            label="reference-free quadrature alias-indexed K5 spacing 2pi",
+            components=5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+        ),
+        "quadrature_alias_power_ep_k5_alpha_0p5": BaselineSpec(
+            key="quadrature_alias_power_ep_k5_alpha_0p5",
+            label="reference-free quadrature alias-indexed Power-EP K5 alpha 0.5 spacing 2pi",
+            components=5,
+            likelihood_power=0.5,
+            alpha=0.5,
+            init_span=12.566370614359172,
+            projection="mode_preserving",
+            alias_spacing=6.283185307179586,
+        ),
     }
     keys = [item.strip() for item in value.split(",") if item.strip()]
     unknown = sorted(set(keys) - set(all_specs))
@@ -489,6 +566,8 @@ def _csv_metric_keys() -> list[str]:
         "likelihood_power",
         "alpha",
         "init_span",
+        "projection",
+        "alias_spacing",
         "num_points",
         "em_steps",
         "state_nll_estimator",

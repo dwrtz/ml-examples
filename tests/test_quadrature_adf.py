@@ -68,6 +68,30 @@ def test_quadrature_adf_mixture_weights_are_normalized() -> None:
     assert np.all(outputs.component_var > 0.0)
 
 
+def test_quadrature_alias_projection_preserves_2pi_component_spacing() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=4)
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=206)
+
+    outputs = run_quadrature_adf_filter(
+        np.asarray(batch.x),
+        np.asarray(batch.y),
+        params,
+        components=5,
+        likelihood_power=1.0,
+        init_span=4.0 * np.pi,
+        projection="mode_preserving",
+        alias_spacing=2.0 * np.pi,
+        num_points=16,
+        em_steps=5,
+    )
+
+    assert outputs.weights.shape == (2, 4, 5)
+    assert np.allclose(np.sum(outputs.weights, axis=-1), 1.0)
+    assert np.all(outputs.component_var > 0.0)
+    assert np.all(np.diff(outputs.component_mean, axis=-1) > 0.0)
+
+
 def test_zero_x_predictive_y_matches_observation_noise() -> None:
     config = NonlinearDataConfig(batch_size=2, time_steps=4, x_pattern="zero")
     params = LinearGaussianParams(q=0.1, r=0.3, m0=1.0, p0=2.0)
