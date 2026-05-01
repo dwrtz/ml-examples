@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lambda Run Experiment"
+  short_description: "Run GPU experiments on the Lambda VM and pull artifacts back."
+  default_prompt: "Run an experiment on the Lambda GPU VM and sync artifacts."

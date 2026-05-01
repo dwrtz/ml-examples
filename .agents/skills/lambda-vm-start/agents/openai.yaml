@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lambda VM Start"
+  short_description: "Launch and verify the Lambda SkyPilot GPU VM."
+  default_prompt: "Start the Lambda GPU VM for ml-examples."

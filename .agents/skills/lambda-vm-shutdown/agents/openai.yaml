@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lambda VM Shutdown"
+  short_description: "Pull artifacts and tear down the Lambda SkyPilot VM."
+  default_prompt: "Shut down the Lambda GPU VM after syncing outputs."

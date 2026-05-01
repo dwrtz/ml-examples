@@ -1,0 +1,122 @@
+# Disposable Lambda Cloud dev VM for ml-examples.
+#
+# This account's current Lambda/SkyPilot catalog does not expose RTX6000.
+# The closest 1x 24 GB GPU option available through SkyPilot is A10:1.
+#
+# Typical usage:
+#
+#   sky launch -c ml-exp cloud/lambda_rtx6000_dev.sky.yaml
+#
+# Then run experiments from your local checkout with:
+#
+#   sky exec ml-exp --workdir . --gpus=A10:1 \
+#     'make sweep-nonlinear-learned \
+#        NONLINEAR_LEARNED_CONFIGS=experiments/nonlinear/03_weak_sine_observation.yaml,experiments/nonlinear/04_intermittent_sine_observation.yaml \
+#        NONLINEAR_LEARNED_MODELS=structured_joint_elbo_h4_w005_predictive_y_masked_y_spans_h4,direct_mixture_k2_joint_iwae_h4_k32 \
+#        NONLINEAR_LEARNED_SEEDS=321,322,323 \
+#        NONLINEAR_LEARNED_STEPS=1000 \
+#        NONLINEAR_LEARNED_DIR=outputs/lambda_probe_1000'
+#
+# Pull artifacts back before teardown:
+#
+#   mkdir -p outputs/cloud_downloads
+#   rsync -Pavz ml-exp:~/sky_workdir/outputs/lambda_probe_1000/ \
+#     outputs/cloud_downloads/lambda_probe_1000/
+#
+# Tear down:
+#
+#   sky down -y ml-exp
+
+name: ml-examples-lambda-a10-dev
+
+workdir: .
+
+envs:
+  UV_LINK_MODE: copy
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  XLA_PYTHON_CLIENT_MEM_FRACTION: "0.85"
+
+resources:
+  infra: lambda
+
+  # Confirm this exact accelerator key with:
+  #
+  #   sky gpus list A10 --infra lambda --all-regions
+  #
+  # If SkyPilot reports a different Lambda accelerator name, replace this line
+  # with the reported "<GPU>:1" value.
+  accelerators: A10:1
+
+  use_spot: false
+  cpus: 4+
+  memory: 24+
+  disk_size: 120
+
+  # Automatically tear the VM down after idle time.
+  # This workflow treats the VM as disposable and pulls artifacts back with rsync.
+  autostop:
+    idle_minutes: 30
+    down: true
+    wait_for: jobs
+
+setup: |
+  set -euo pipefail
+
+  export PATH="$HOME/.local/bin:$PATH"
+
+  echo "=== System ==="
+  uname -a || true
+  nvidia-smi || true
+
+  echo "=== Install uv if needed ==="
+  if ! command -v uv >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+
+  echo "=== Python / uv environment ==="
+  if [ -f .python-version ]; then
+    PYTHON_VERSION="$(tr -d '[:space:]' < .python-version)"
+  else
+    PYTHON_VERSION="3.12"
+  fi
+
+  uv python install "$PYTHON_VERSION"
+  uv sync --frozen --dev --group gpu-cuda12
+
+  echo "=== JAX GPU smoke test ==="
+  uv run python - <<'PY'
+  import jax
+
+  print("JAX version:", jax.__version__)
+  print("JAX devices:", jax.devices())
+
+  gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+  if not gpu_devices:
+      raise SystemExit(
+          "No JAX GPU device detected. The checked-in uv.lock may contain CPU-only JAX. "
+          "Add a CUDA-enabled JAX dependency to the locked environment, then re-run setup."
+      )
+  PY
+
+  echo "=== Repo tests ==="
+  uv run pytest -q
+
+run: |
+  set -euo pipefail
+
+  echo "=== Lambda GPU dev VM ready ==="
+  echo "Remote workdir: $PWD"
+  nvidia-smi
+
+  uv run python - <<'PY'
+  import jax
+
+  print("JAX version:", jax.__version__)
+  print("JAX devices:", jax.devices())
+  PY
+
+  echo ""
+  echo "Use sky exec from your local checkout to run experiments, for example:"
+  echo ""
+  echo "  sky exec ml-exp --workdir . --gpus=A10:1 'make sweep-nonlinear-learned NONLINEAR_LEARNED_DIR=outputs/lambda_probe'"

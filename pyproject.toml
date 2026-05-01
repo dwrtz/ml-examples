@@ -24,6 +24,9 @@ dev = [
   "pytest",
   "ruff",
 ]
+gpu-cuda12 = [
+  "jax[cuda12]",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
