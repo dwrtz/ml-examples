@@ -18,13 +18,16 @@ from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
     GaussianMixtureMLPOutputs,
+    component_mixture_mlp_step,
     direct_mlp_step,
     direct_mixture_mlp_step,
     edge_mean_cov_from_outputs,
+    init_component_mixture_mlp_params,
     init_direct_mixture_mlp_params,
     init_direct_mlp_params,
     init_structured_mixture_mlp_params,
     init_structured_mlp_params,
+    run_component_mixture_mlp_filter,
     run_direct_mlp_filter,
     run_direct_mixture_mlp_filter,
     run_direct_mlp_teacher_forced,
@@ -84,6 +87,7 @@ def main() -> None:
     renyi_alpha = float(training_config.get("renyi_alpha", 1.0))
     entropy_bonus_weight = float(training_config.get("entropy_bonus_weight", 0.0))
     posterior_family = str(training_config.get("posterior_family", "gaussian"))
+    mixture_cell = str(training_config.get("mixture_cell", "direct"))
     mixture_components = int(training_config.get("mixture_components", 1))
     mixture_component_mean_init_span = float(
         training_config.get("mixture_component_mean_init_span", 0.0)
@@ -235,6 +239,12 @@ def main() -> None:
         raise ValueError("mixture_components must be 1 for posterior_family='gaussian'")
     if posterior_family == "gaussian_mixture" and mixture_components <= 1:
         raise ValueError("gaussian_mixture requires mixture_components > 1")
+    if mixture_cell not in {"direct", "component"}:
+        raise ValueError("mixture_cell must be one of: direct, component")
+    if posterior_family != "gaussian_mixture" and mixture_cell != "direct":
+        raise ValueError("mixture_cell='component' requires posterior_family='gaussian_mixture'")
+    if config["model"] == "structured_elbo_sine_mlp" and mixture_cell != "direct":
+        raise ValueError("mixture_cell='component' is only supported for direct mixture models")
     if mixture_component_mean_init_span < 0.0:
         raise ValueError("mixture_component_mean_init_span must be nonnegative")
     if predictive_y_estimator != "quadrature":
@@ -306,6 +316,7 @@ def main() -> None:
         jax.random.PRNGKey(int(config["seed"]) + 1),
         hidden_dim=int(training_config["hidden_dim"]),
         posterior_family=posterior_family,
+        mixture_cell=mixture_cell,
         mixture_components=mixture_components,
         mixture_component_mean_init_span=mixture_component_mean_init_span,
     )
@@ -359,7 +370,9 @@ def main() -> None:
                 min_var=min_var,
                 y_observed=y_observed,
                 posterior_family=posterior_family,
+                mixture_cell=mixture_cell,
                 mixture_components=mixture_components,
+                mixture_component_mean_init_span=mixture_component_mean_init_span,
             )
         )
         loss = jnp.asarray(0.0, dtype=batch_x.dtype)
@@ -597,7 +610,9 @@ def main() -> None:
         min_var=min_var,
         y_observed=eval_y_observed,
         posterior_family=posterior_family,
+        mixture_cell=mixture_cell,
         mixture_components=mixture_components,
+        mixture_component_mean_init_span=mixture_component_mean_init_span,
     )
     eval_cached = load_or_compute_nonlinear_reference(
         eval_data_config,
@@ -707,6 +722,7 @@ def main() -> None:
         "renyi_alpha": renyi_alpha,
         "entropy_bonus_weight": entropy_bonus_weight,
         "posterior_family": posterior_family,
+        "mixture_cell": mixture_cell,
         "mixture_components": mixture_components,
         "mixture_component_mean_init_span": mixture_component_mean_init_span,
         "elbo_weight": elbo_weight,
@@ -871,6 +887,7 @@ def _init_model_params(
     *,
     hidden_dim: int,
     posterior_family: str = "gaussian",
+    mixture_cell: str = "direct",
     mixture_components: int = 1,
     mixture_component_mean_init_span: float = 0.0,
 ) -> dict[str, jax.Array]:
@@ -878,6 +895,8 @@ def _init_model_params(
         init_fn = (
             init_structured_mixture_mlp_params
             if model == "structured_elbo_sine_mlp"
+            else init_component_mixture_mlp_params
+            if mixture_cell == "component"
             else init_direct_mixture_mlp_params
         )
         return init_fn(
@@ -933,7 +952,9 @@ def _run_model_filter(
     min_var: float,
     y_observed: jax.Array | None = None,
     posterior_family: str = "gaussian",
+    mixture_cell: str = "direct",
     mixture_components: int = 1,
+    mixture_component_mean_init_span: float = 0.0,
 ):
     if posterior_family == "gaussian_mixture":
         if model == "structured_elbo_sine_mlp":
@@ -944,6 +965,16 @@ def _run_model_filter(
                 num_components=mixture_components,
                 observation=observation,
                 min_var=min_var,
+                y_observed=y_observed,
+            )
+        if mixture_cell == "component":
+            return _run_component_mixture_mlp_filter(
+                params,
+                batch,
+                state_params,
+                num_components=mixture_components,
+                min_var=min_var,
+                component_mean_init_span=mixture_component_mean_init_span,
                 y_observed=y_observed,
             )
         return _run_direct_mixture_mlp_filter(
@@ -1068,6 +1099,78 @@ def _run_direct_mixture_mlp_filter(
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def _run_component_mixture_mlp_filter(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    num_components: int,
+    min_var: float,
+    component_mean_init_span: float,
+    y_observed: jax.Array | None,
+):
+    if y_observed is None:
+        return run_component_mixture_mlp_filter(
+            params,
+            batch,
+            state_params,
+            num_components=num_components,
+            min_var=min_var,
+            component_mean_init_span=component_mean_init_span,
+        )
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+    observed_bt = y_observed.T
+
+    def step(
+        carry: tuple[jax.Array, jax.Array, jax.Array],
+        obs: tuple[jax.Array, jax.Array, jax.Array],
+    ):
+        prev_weights, prev_mean, prev_var = carry
+        x_t, y_t, observed_t = obs
+        update_outputs = component_mixture_mlp_step(
+            params,
+            prev_weights,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            min_var=min_var,
+        )
+        transition_outputs = mixture_transition_prediction_outputs(
+            prev_weights,
+            prev_mean,
+            prev_var,
+            state_params,
+        )
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
+        return (outputs.filter_weights, outputs.component_mean, outputs.component_var), outputs
+
+    batch_size = batch.x.shape[0]
+    component_offsets = _component_offsets(num_components, component_mean_init_span)
+    init = (
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=DEFAULT_DTYPE)
+        + component_offsets[None, :],
+        jnp.full((batch_size, num_components), state_params.p0, dtype=DEFAULT_DTYPE),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
+    return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
+    if component_mean_init_span == 0.0:
+        return jnp.zeros((num_components,), dtype=DEFAULT_DTYPE)
+    return jnp.linspace(
+        -0.5 * component_mean_init_span,
+        0.5 * component_mean_init_span,
+        num_components,
+        dtype=DEFAULT_DTYPE,
+    )
 
 
 def _where_outputs(condition, true_outputs, false_outputs):

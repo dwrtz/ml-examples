@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import subprocess
@@ -87,6 +88,7 @@ class ModelSpec:
     renyi_alpha: float = 1.0
     entropy_bonus_weight: float = 0.0
     posterior_family: str = "gaussian"
+    mixture_cell: str = "direct"
     mixture_components: int = 1
     mixture_component_mean_init_span: float = 0.0
 
@@ -107,7 +109,10 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", default="outputs/nonlinear_learned_suite")
     parser.add_argument("--skip-run", action="store_true")
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +129,7 @@ def main() -> None:
     )
     base_train_config = _read_config(Path("experiments/nonlinear/08_direct_elbo_sine_mlp.yaml"))
 
-    rows = []
+    run_items = []
     for config_path in config_paths:
         reference_config = _read_config(config_path)
         for seed in seeds or [int(reference_config["seed"])]:
@@ -144,16 +149,32 @@ def main() -> None:
                     output_dir=run_dir,
                 )
                 _write_config(run_config_path, config)
-                if not args.skip_run:
-                    _run_training(run_config_path)
-                rows.append(
-                    _load_row(
-                        run_dir,
-                        config_path=run_config_path,
-                        config=config,
-                        spec=spec,
-                    )
+                run_items.append(
+                    (run_dir, run_config_path, config, spec)
                 )
+
+    if not args.skip_run:
+        if args.workers == 1:
+            for _, run_config_path, _, _ in run_items:
+                _run_training(run_config_path)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+                futures = [
+                    pool.submit(_run_training, run_config_path)
+                    for _, run_config_path, _, _ in run_items
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+
+    rows = [
+        _load_row(
+            run_dir,
+            config_path=run_config_path,
+            config=config,
+            spec=spec,
+        )
+        for run_dir, run_config_path, config, spec in run_items
+    ]
 
     _write_csv(output_dir / "metrics.csv", rows)
     (output_dir / "summary.json").write_text(
@@ -588,7 +609,7 @@ def _selected_model_specs(
         ),
         "direct_mixture_k3_joint_iwae_h4_k32": ModelSpec(
             key="direct_mixture_k3_joint_iwae_h4_k32",
-            label="direct nonlinear K3 exchangeable mixture windowed IWAE h4 k32",
+            label="direct nonlinear K3 mixture windowed IWAE h4 k32",
             objective="direct_elbo_sine_mlp",
             reference_variance_ratio_weight=0.0,
             elbo_weight=0.0,
@@ -599,6 +620,38 @@ def _selected_model_specs(
             num_importance_samples=32,
             posterior_family="gaussian_mixture",
             mixture_components=3,
+        ),
+        "direct_exchangeable_mixture_k2_joint_iwae_h4_k32": ModelSpec(
+            key="direct_exchangeable_mixture_k2_joint_iwae_h4_k32",
+            label="direct nonlinear exchangeable K2 mixture windowed IWAE h4 k32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            posterior_family="gaussian_mixture",
+            mixture_cell="component",
+            mixture_components=2,
+            mixture_component_mean_init_span=1.0,
+        ),
+        "direct_exchangeable_mixture_k3_joint_iwae_h4_k32": ModelSpec(
+            key="direct_exchangeable_mixture_k3_joint_iwae_h4_k32",
+            label="direct nonlinear exchangeable K3 mixture windowed IWAE h4 k32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            posterior_family="gaussian_mixture",
+            mixture_cell="component",
+            mixture_components=3,
+            mixture_component_mean_init_span=1.0,
         ),
         "direct_mixture_k2_predictive_consistent_iwae_h4_k32": ModelSpec(
             key="direct_mixture_k2_predictive_consistent_iwae_h4_k32",
@@ -1323,6 +1376,7 @@ def _make_train_config(
         "renyi_alpha": spec.renyi_alpha,
         "entropy_bonus_weight": spec.entropy_bonus_weight,
         "posterior_family": spec.posterior_family,
+        "mixture_cell": spec.mixture_cell,
         "mixture_components": spec.mixture_components,
         "mixture_component_mean_init_span": spec.mixture_component_mean_init_span,
     }
@@ -1368,6 +1422,7 @@ def _load_row(
         "renyi_alpha": metrics["renyi_alpha"],
         "entropy_bonus_weight": metrics["entropy_bonus_weight"],
         "posterior_family": metrics["posterior_family"],
+        "mixture_cell": metrics.get("mixture_cell", "direct"),
         "mixture_components": metrics["mixture_components"],
         "mixture_component_mean_init_span": metrics.get("mixture_component_mean_init_span", 0.0),
         "elbo_weight": metrics["elbo_weight"],
@@ -1456,6 +1511,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "renyi_alpha",
         "entropy_bonus_weight",
         "posterior_family",
+        "mixture_cell",
         "mixture_components",
         "mixture_component_mean_init_span",
         "elbo_weight",
