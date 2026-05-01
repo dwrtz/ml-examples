@@ -9,10 +9,8 @@ import jax
 import jax.scipy as jsp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
-
+from vbf.dtypes import DEFAULT_DTYPE  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
-
 from vbf.data import (  # noqa: E402
     EpisodeBatch,
     LinearGaussianDataConfig,
@@ -155,12 +153,12 @@ def make_nonlinear_batch(
     z_initial = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
         key_z0,
         shape=(config.batch_size,),
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     innovations = jnp.sqrt(params.q) * jax.random.normal(
         key_w,
         shape=(config.batch_size, config.time_steps),
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     z = z_initial[:, None] + jnp.cumsum(innovations, axis=1)
     y_mean = nonlinear_observation_mean(z, x, config.observation)
@@ -169,13 +167,13 @@ def make_nonlinear_batch(
         normal = jax.random.normal(
             key_v,
             shape=(config.batch_size, config.time_steps),
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
         chi2 = 2.0 * jax.random.gamma(
             key_t,
             0.5 * df,
             shape=(config.batch_size, config.time_steps),
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
         y = y_mean + jnp.sqrt(params.r) * normal / jnp.sqrt(chi2 / df)
     else:
@@ -184,7 +182,7 @@ def make_nonlinear_batch(
         ) * jax.random.normal(
             key_v,
             shape=(config.batch_size, config.time_steps),
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
     return EpisodeBatch(x=x, y=y, z=z)
 
@@ -206,7 +204,7 @@ def nonlinear_grid_filter(
         grid_config.grid_min,
         grid_config.grid_max,
         grid_config.num_grid,
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     dz = (grid_config.grid_max - grid_config.grid_min) / (grid_config.num_grid - 1)
     log_dz = jnp.log(dz)
@@ -288,7 +286,7 @@ def nonlinear_grid_filter_shape_diagnostics(
         grid_config.grid_min,
         grid_config.grid_max,
         grid_config.num_grid,
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     dz = (grid_config.grid_max - grid_config.grid_min) / (grid_config.num_grid - 1)
     log_dz = jnp.log(dz)
@@ -366,7 +364,7 @@ def nonlinear_grid_filter_masses(
         grid_config.grid_min,
         grid_config.grid_max,
         grid_config.num_grid,
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     dz = (grid_config.grid_max - grid_config.grid_min) / (grid_config.num_grid - 1)
     log_dz = jnp.log(dz)
@@ -834,8 +832,8 @@ def run_nonlinear_structured_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -888,9 +886,9 @@ def run_nonlinear_structured_mixture_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -908,8 +906,8 @@ def run_nonlinear_structured_mlp_teacher_forced(
 ) -> StructuredMLPOutputs:
     """Run nonlinear structured updates using target previous beliefs as inputs."""
 
-    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
-    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=DEFAULT_DTYPE)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=DEFAULT_DTYPE)
     prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
     prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
     return nonlinear_structured_mlp_step(

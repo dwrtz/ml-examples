@@ -52,6 +52,10 @@ uv sync --dev
 make test
 ```
 
+VBF JAX arrays default to `float32`, which is the preferred default for the GPU
+VM. Set `VBF_ENABLE_X64=1` before running a command to restore float64 for
+precision-sensitive diagnostics.
+
 ## Common Commands
 
 Run the linear-Gaussian oracle check:

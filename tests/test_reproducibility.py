@@ -59,7 +59,7 @@ def test_linear_gaussian_x_patterns() -> None:
     )
 
     np.testing.assert_array_equal(np.asarray(zero.x), np.zeros((2, 6)))
-    np.testing.assert_array_equal(np.asarray(constant.x), np.full((2, 6), 0.3))
+    np.testing.assert_allclose(np.asarray(constant.x), np.full((2, 6), 0.3), atol=1e-6)
     np.testing.assert_array_equal(np.asarray(intermittent.x[:, 1::3]), np.zeros((2, 3)))
 
 

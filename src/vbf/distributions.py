@@ -6,9 +6,6 @@ from dataclasses import dataclass
 
 import jax
 import numpy as np
-
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp  # noqa: E402
 
 

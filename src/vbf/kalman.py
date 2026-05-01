@@ -6,8 +6,7 @@ from dataclasses import dataclass
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
-
+from vbf.dtypes import DEFAULT_DTYPE  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
@@ -72,8 +71,8 @@ def kalman_filter_scalar(batch: EpisodeBatch, params: LinearGaussianParams) -> K
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
 
@@ -124,8 +123,8 @@ def kalman_edge_posterior_scalar(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     edge_mean, edge_cov, filter_mean, filter_var = outputs

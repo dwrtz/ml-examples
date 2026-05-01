@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import yaml
 
+from vbf.dtypes import DEFAULT_DTYPE
+import jax.numpy as jnp
 from sweep_quadrature_adf import (
     _logsumexp as _np_logsumexp,
     _mixture_log_prob as _np_mixture_log_prob,
@@ -620,13 +621,13 @@ def _init_predictive_carry_params(
 ) -> dict[str, jax.Array]:
     input_dim = 6
     key_w1, _ = jax.random.split(key)
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 3), dtype=jnp.float64),
-        "b2": jnp.zeros((num_components, 3), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 3), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((num_components, 3), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -1049,12 +1050,12 @@ def _previous_mixture_filter_beliefs(
 
 def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
     if component_mean_init_span == 0.0:
-        return jnp.zeros((num_components,), dtype=jnp.float64)
+        return jnp.zeros((num_components,), dtype=DEFAULT_DTYPE)
     return jnp.linspace(
         -0.5 * component_mean_init_span,
         0.5 * component_mean_init_span,
         num_components,
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
 
 

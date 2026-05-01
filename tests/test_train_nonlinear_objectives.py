@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from vbf.data import LinearGaussianParams
+from vbf.dtypes import DEFAULT_DTYPE
 from vbf.models.cells import (
     init_direct_mixture_mlp_params,
     init_structured_mixture_mlp_params,
@@ -364,7 +365,7 @@ def test_fivo_mixture_objective_is_finite() -> None:
 
 def test_fixed_lag_twist_uses_only_future_observations() -> None:
     train_nonlinear = _load_train_module()
-    x = jnp.arange(10, dtype=jnp.float64).reshape(1, 10)
+    x = jnp.arange(10, dtype=DEFAULT_DTYPE).reshape(1, 10)
     y = x + 100.0
 
     future_x, future_y, future_mask = train_nonlinear._future_observation_windows(

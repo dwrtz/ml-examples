@@ -5,9 +5,6 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import jax
-
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402

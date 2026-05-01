@@ -6,8 +6,7 @@ from typing import NamedTuple
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
-
+from vbf.dtypes import DEFAULT_DTYPE  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import EpisodeBatch, LinearGaussianParams, broadcast_param_like  # noqa: E402
@@ -51,13 +50,13 @@ def init_structured_mlp_params(
     """Initialize a one-hidden-layer strict filtering MLP."""
 
     key_w1, _ = jax.random.split(key)
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 5), dtype=jnp.float64),
-        "b2": jnp.zeros((5,), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 5), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((5,), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -70,18 +69,20 @@ def init_split_head_mlp_params(
     """Initialize an MLP with separate filter and backward output heads."""
 
     key_filter, key_backward = jax.random.split(key)
-    w_filter1 = jax.random.normal(key_filter, shape=(input_dim, hidden_dim), dtype=jnp.float64)
-    w_backward1 = jax.random.normal(key_backward, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w_filter1 = jax.random.normal(key_filter, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
+    w_backward1 = jax.random.normal(
+        key_backward, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE
+    )
     scale = jnp.sqrt(2.0 / input_dim)
     return {
         "w_filter1": w_filter1 * scale,
-        "b_filter1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w_filter2": jnp.zeros((hidden_dim, 2), dtype=jnp.float64),
-        "b_filter2": jnp.zeros((2,), dtype=jnp.float64),
+        "b_filter1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w_filter2": jnp.zeros((hidden_dim, 2), dtype=DEFAULT_DTYPE),
+        "b_filter2": jnp.zeros((2,), dtype=DEFAULT_DTYPE),
         "w_backward1": w_backward1 * scale,
-        "b_backward1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w_backward2": jnp.zeros((hidden_dim, 3), dtype=jnp.float64),
-        "b_backward2": jnp.zeros((3,), dtype=jnp.float64),
+        "b_backward1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w_backward2": jnp.zeros((hidden_dim, 3), dtype=DEFAULT_DTYPE),
+        "b_backward2": jnp.zeros((3,), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -114,21 +115,21 @@ def init_direct_mixture_mlp_params(
     if num_components <= 0:
         raise ValueError("num_components must be positive")
     key_w1, _ = jax.random.split(key)
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
-    b2 = jnp.zeros((num_components, 6), dtype=jnp.float64)
+    b2 = jnp.zeros((num_components, 6), dtype=DEFAULT_DTYPE)
     if component_mean_init_span != 0.0:
         component_offsets = jnp.linspace(
             -0.5 * component_mean_init_span,
             0.5 * component_mean_init_span,
             num_components,
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
         b2 = b2.at[:, 1].set(component_offsets)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 6 * num_components), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 6 * num_components), dtype=DEFAULT_DTYPE),
         "b2": jnp.reshape(b2, (6 * num_components,)),
     }
 
@@ -146,13 +147,13 @@ def init_component_mixture_mlp_params(
     if num_components <= 0:
         raise ValueError("num_components must be positive")
     key_w1, _ = jax.random.split(key)
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 6), dtype=jnp.float64),
-        "b2": jnp.zeros((num_components, 6), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 6), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((num_components, 6), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -204,8 +205,8 @@ def run_structured_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -240,8 +241,8 @@ def run_direct_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -282,9 +283,9 @@ def run_direct_mixture_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -325,10 +326,10 @@ def run_component_mixture_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64)
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=DEFAULT_DTYPE)
         + _component_offsets(num_components, component_mean_init_span)[None, :],
-        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -363,8 +364,8 @@ def run_split_head_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return StructuredMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
@@ -381,8 +382,8 @@ def run_direct_mlp_teacher_forced(
 ) -> StructuredMLPOutputs:
     """Run direct updates using target previous beliefs as inputs."""
 
-    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
-    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=DEFAULT_DTYPE)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=DEFAULT_DTYPE)
     prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
     prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
     return direct_mlp_step(
@@ -407,8 +408,8 @@ def run_structured_mlp_teacher_forced(
 ) -> StructuredMLPOutputs:
     """Run independent updates using target previous beliefs as inputs."""
 
-    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
-    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=DEFAULT_DTYPE)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=DEFAULT_DTYPE)
     prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
     prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
     return structured_mlp_step(
@@ -433,8 +434,8 @@ def run_split_head_mlp_teacher_forced(
 ) -> StructuredMLPOutputs:
     """Run independent split-head updates using target previous beliefs as inputs."""
 
-    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=jnp.float64)
-    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=jnp.float64)
+    initial_mean = jnp.full((batch.x.shape[0], 1), state_params.m0, dtype=DEFAULT_DTYPE)
+    initial_var = jnp.full((batch.x.shape[0], 1), state_params.p0, dtype=DEFAULT_DTYPE)
     prev_mean = jnp.concatenate((initial_mean, target_filter_mean[:, :-1]), axis=1)
     prev_var = jnp.concatenate((initial_var, target_filter_var[:, :-1]), axis=1)
     return split_head_mlp_step(
@@ -689,12 +690,12 @@ def mixture_edge_mean_cov_from_outputs(
 
 def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
     if component_mean_init_span == 0.0:
-        return jnp.zeros((num_components,), dtype=jnp.float64)
+        return jnp.zeros((num_components,), dtype=DEFAULT_DTYPE)
     return jnp.linspace(
         -0.5 * component_mean_init_span,
         0.5 * component_mean_init_span,
         num_components,
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
 
 

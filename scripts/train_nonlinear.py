@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import yaml
 
+from vbf.dtypes import DEFAULT_DTYPE
+import jax.numpy as jnp
 from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
@@ -565,7 +566,7 @@ def main() -> None:
             step_batch.z,
             step_y_observed,
             step_key,
-            jnp.asarray(step, dtype=jnp.float64),
+            jnp.asarray(step, dtype=DEFAULT_DTYPE),
         )
         params, opt_state = adam_update(
             params,
@@ -584,7 +585,7 @@ def main() -> None:
             train_batch.z,
             train_y_observed,
             jax.random.PRNGKey(int(config["seed"]) + 3),
-            jnp.asarray(training_config["steps"], dtype=jnp.float64),
+            jnp.asarray(training_config["steps"], dtype=DEFAULT_DTYPE),
         )
     )
     outputs = _run_model_filter(
@@ -752,8 +753,8 @@ def main() -> None:
         "mask_y_span_probability": mask_y_span_probability,
         "mask_y_span_length": mask_y_span_length,
         "mask_y_seed_offset": mask_y_seed_offset,
-        "train_y_observed_fraction": float(jnp.mean(train_y_observed.astype(jnp.float64))),
-        "eval_y_observed_fraction": float(jnp.mean(eval_y_observed.astype(jnp.float64))),
+        "train_y_observed_fraction": float(jnp.mean(train_y_observed.astype(DEFAULT_DTYPE))),
+        "eval_y_observed_fraction": float(jnp.mean(eval_y_observed.astype(DEFAULT_DTYPE))),
         "reference_variance_ratio_weight": reference_variance_ratio_weight,
         "reference_time_variance_ratio_weight": reference_time_variance_ratio_weight,
         "reference_log_variance_weight": reference_log_variance_weight,
@@ -899,13 +900,13 @@ def _init_auxiliary_proposal_params(
     """Initialize residual proposal corrections around the analytic bridge proposal."""
 
     key_w1, _ = jax.random.split(key)
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 3), dtype=jnp.float64),
-        "b2": jnp.zeros((3,), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 3), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((3,), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -1004,8 +1005,8 @@ def _run_direct_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size,), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size,), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return type(outputs)(*(_time_major_to_batch_major(item) for item in outputs))
@@ -1061,9 +1062,9 @@ def _run_direct_mixture_mlp_filter(
 
     batch_size = batch.x.shape[0]
     init = (
-        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.m0, dtype=jnp.float64),
-        jnp.full((batch_size, num_components), state_params.p0, dtype=jnp.float64),
+        jnp.full((batch_size, num_components), 1.0 / num_components, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size, num_components), state_params.p0, dtype=DEFAULT_DTYPE),
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))

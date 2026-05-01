@@ -6,8 +6,7 @@ from typing import NamedTuple
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
-
+from vbf.dtypes import DEFAULT_DTYPE  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
 from vbf.data import LinearGaussianParams, broadcast_param_like  # noqa: E402
@@ -30,13 +29,13 @@ def init_predictive_mlp_params(
     """Initialize a Gaussian predictive MLP head."""
 
     key_w1 = key
-    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=jnp.float64)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
     w1 = w1 * jnp.sqrt(2.0 / input_dim)
     return {
         "w1": w1,
-        "b1": jnp.zeros((hidden_dim,), dtype=jnp.float64),
-        "w2": jnp.zeros((hidden_dim, 2), dtype=jnp.float64),
-        "b2": jnp.zeros((2,), dtype=jnp.float64),
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 2), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((2,), dtype=DEFAULT_DTYPE),
     }
 
 

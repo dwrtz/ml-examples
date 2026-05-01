@@ -5,6 +5,8 @@ import numpy as np
 from vbf.data import LinearGaussianDataConfig, LinearGaussianParams, make_linear_gaussian_batch
 from vbf.kalman import kalman_edge_posterior_scalar, kalman_filter_scalar
 
+FLOAT_ATOL = 1e-6
+
 
 def test_edge_posterior_marginal_matches_kalman_filter() -> None:
     data_config = LinearGaussianDataConfig(batch_size=8, time_steps=11)
@@ -17,12 +19,12 @@ def test_edge_posterior_marginal_matches_kalman_filter() -> None:
     np.testing.assert_allclose(
         np.asarray(edge.edge_mean[..., 0]),
         np.asarray(kalman.filter_mean),
-        atol=1e-12,
+        atol=FLOAT_ATOL,
     )
     np.testing.assert_allclose(
         np.asarray(edge.edge_cov[..., 0, 0]),
         np.asarray(kalman.filter_var),
-        atol=1e-12,
+        atol=FLOAT_ATOL,
     )
 
 
@@ -36,7 +38,7 @@ def test_edge_covariance_is_symmetric() -> None:
     np.testing.assert_allclose(
         np.asarray(edge.edge_cov[..., 0, 1]),
         np.asarray(edge.edge_cov[..., 1, 0]),
-        atol=1e-12,
+        atol=FLOAT_ATOL,
     )
     assert np.all(np.asarray(edge.edge_cov[..., 0, 0]) > 0)
     assert np.all(np.asarray(edge.edge_cov[..., 1, 1]) > 0)

@@ -394,7 +394,7 @@ def test_direct_mixture_mlp_filter_shapes_and_moments() -> None:
     np.testing.assert_allclose(
         np.asarray(outputs.filter_weights.sum(axis=-1)),
         np.ones((3, 5)),
-        atol=1e-12,
+        atol=1e-6,
     )
 
 
@@ -407,4 +407,4 @@ def test_direct_mixture_mlp_component_mean_spread_initialization() -> None:
     )
     b2 = np.asarray(params["b2"]).reshape(4, 6)
 
-    np.testing.assert_allclose(b2[:, 1], np.linspace(-3.0, 3.0, 4), atol=1e-12)
+    np.testing.assert_allclose(b2[:, 1], np.linspace(-3.0, 3.0, 4), atol=1e-6)

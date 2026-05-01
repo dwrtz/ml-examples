@@ -36,7 +36,7 @@ def test_measurement_predictive_variance_formula() -> None:
     predictive = measurement_predictive_scalar(batch, params)
 
     expected = batch.x**2 * kalman.pred_var + params.r
-    np.testing.assert_allclose(np.asarray(predictive.var), np.asarray(expected), atol=1e-12)
+    np.testing.assert_allclose(np.asarray(predictive.var), np.asarray(expected), atol=1e-6)
 
 
 def test_structured_mlp_zero_init_forward_matches_kalman() -> None:
@@ -53,7 +53,7 @@ def test_structured_mlp_zero_init_forward_matches_kalman() -> None:
     np.testing.assert_allclose(
         np.asarray(outputs.filter_mean),
         np.asarray(kalman.filter_mean),
-        atol=1e-12,
+        atol=1e-6,
     )
     np.testing.assert_allclose(
         np.asarray(outputs.filter_var),

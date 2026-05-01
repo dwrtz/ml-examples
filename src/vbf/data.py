@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import jax
-
-jax.config.update("jax_enable_x64", True)
-
+from vbf.dtypes import DEFAULT_DTYPE  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
 
@@ -74,20 +72,20 @@ def make_linear_gaussian_batch(
     z_initial = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
         key_z0,
         shape=(config.batch_size,),
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     q = broadcast_param_like(params.q, x)
     r = broadcast_param_like(params.r, x)
     innovations = jnp.sqrt(q) * jax.random.normal(
         key_w,
         shape=(config.batch_size, config.time_steps),
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
     z = z_initial[:, None] + jnp.cumsum(innovations, axis=1)
     y = x * z + jnp.sqrt(r) * jax.random.normal(
         key_v,
         shape=(config.batch_size, config.time_steps),
-        dtype=jnp.float64,
+        dtype=DEFAULT_DTYPE,
     )
 
     return EpisodeBatch(x=x, y=y, z=z)
@@ -129,7 +127,7 @@ def _make_x(config: LinearGaussianDataConfig, key: jax.Array) -> jax.Array:
     if config.x_missing_period <= 0:
         raise ValueError("x_missing_period must be positive")
 
-    time = jnp.arange(config.time_steps, dtype=jnp.float64)
+    time = jnp.arange(config.time_steps, dtype=DEFAULT_DTYPE)
     if config.x_pattern == "sinusoidal":
         x_single = _sinusoidal_x(config, time)
         return jnp.broadcast_to(x_single, (config.batch_size, config.time_steps))
@@ -146,21 +144,21 @@ def _make_x(config: LinearGaussianDataConfig, key: jax.Array) -> jax.Array:
         return jnp.full(
             (config.batch_size, config.time_steps),
             config.x_constant,
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
     if config.x_pattern == "zero":
-        return jnp.zeros((config.batch_size, config.time_steps), dtype=jnp.float64)
+        return jnp.zeros((config.batch_size, config.time_steps), dtype=DEFAULT_DTYPE)
     if config.x_pattern == "random_normal":
         return config.x_amplitude * jax.random.normal(
             key,
             shape=(config.batch_size, config.time_steps),
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
         )
     if config.x_pattern == "random_uniform":
         return config.x_amplitude * jax.random.uniform(
             key,
             shape=(config.batch_size, config.time_steps),
-            dtype=jnp.float64,
+            dtype=DEFAULT_DTYPE,
             minval=-1.0,
             maxval=1.0,
         )
