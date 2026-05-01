@@ -92,6 +92,8 @@ class ModelSpec:
     mixture_cell: str = "direct"
     mixture_components: int = 1
     mixture_component_mean_init_span: float = 0.0
+    flow_bins: int = 8
+    flow_bound: float = 5.0
 
 
 def main() -> None:
@@ -940,6 +942,36 @@ def _selected_model_specs(
             mixture_components=4,
             mixture_component_mean_init_span=6.283185307179586,
         ),
+        "direct_flow_spline_iwae_h4_k32": ModelSpec(
+            key="direct_flow_spline_iwae_h4_k32",
+            label="direct nonlinear scalar spline flow windowed IWAE h4 k32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            joint_elbo_num_windows=8,
+            objective_family="iwae",
+            num_importance_samples=32,
+            posterior_family="scalar_flow",
+            flow_bins=8,
+            flow_bound=5.0,
+        ),
+        "direct_flow_spline_fivo_bridge_n32": ModelSpec(
+            key="direct_flow_spline_fivo_bridge_n32",
+            label="direct nonlinear scalar spline flow FIVO bridge n32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            objective_family="fivo_bridge",
+            num_importance_samples=32,
+            fivo_num_particles=32,
+            posterior_family="scalar_flow",
+            flow_bins=8,
+            flow_bound=5.0,
+        ),
         "direct_mixture_k2_local_projection": ModelSpec(
             key="direct_mixture_k2_local_projection",
             label="direct nonlinear K2 mixture local ADF projection",
@@ -1404,6 +1436,8 @@ def _make_train_config(
         "mixture_cell": spec.mixture_cell,
         "mixture_components": spec.mixture_components,
         "mixture_component_mean_init_span": spec.mixture_component_mean_init_span,
+        "flow_bins": spec.flow_bins,
+        "flow_bound": spec.flow_bound,
     }
     return config
 
@@ -1450,6 +1484,8 @@ def _load_row(
         "mixture_cell": metrics.get("mixture_cell", "direct"),
         "mixture_components": metrics["mixture_components"],
         "mixture_component_mean_init_span": metrics.get("mixture_component_mean_init_span", 0.0),
+        "flow_bins": metrics.get("flow_bins", 0),
+        "flow_bound": metrics.get("flow_bound", 0.0),
         "elbo_weight": metrics["elbo_weight"],
         "predictive_y_weight": metrics["predictive_y_weight"],
         "predictive_y_start_fraction": metrics.get("predictive_y_start_fraction", 0.0),
@@ -1546,6 +1582,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "mixture_cell",
         "mixture_components",
         "mixture_component_mean_init_span",
+        "flow_bins",
+        "flow_bound",
         "elbo_weight",
         "predictive_y_weight",
         "predictive_y_start_fraction",

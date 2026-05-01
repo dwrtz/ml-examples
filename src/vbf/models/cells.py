@@ -41,6 +41,17 @@ class GaussianMixtureMLPOutputs(NamedTuple):
         return jnp.maximum(second_moment - self.filter_mean**2, 0.0)
 
 
+class ScalarFlowMLPOutputs(NamedTuple):
+    filter_mean: jax.Array
+    filter_var: jax.Array
+    flow_loc: jax.Array
+    flow_log_scale: jax.Array
+    flow_bin_logits: jax.Array
+    backward_a: jax.Array
+    backward_b: jax.Array
+    backward_var: jax.Array
+
+
 def init_structured_mlp_params(
     key: jax.Array,
     *,
@@ -131,6 +142,28 @@ def init_direct_mixture_mlp_params(
         "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
         "w2": jnp.zeros((hidden_dim, 6 * num_components), dtype=DEFAULT_DTYPE),
         "b2": jnp.reshape(b2, (6 * num_components,)),
+    }
+
+
+def init_scalar_flow_mlp_params(
+    key: jax.Array,
+    *,
+    hidden_dim: int = 32,
+    input_dim: int = 6,
+    flow_bins: int = 8,
+) -> dict[str, jax.Array]:
+    """Initialize a strict scalar filtering MLP with a monotone spline marginal."""
+
+    if flow_bins <= 0:
+        raise ValueError("flow_bins must be positive")
+    key_w1, _ = jax.random.split(key)
+    w1 = jax.random.normal(key_w1, shape=(input_dim, hidden_dim), dtype=DEFAULT_DTYPE)
+    w1 = w1 * jnp.sqrt(2.0 / input_dim)
+    return {
+        "w1": w1,
+        "b1": jnp.zeros((hidden_dim,), dtype=DEFAULT_DTYPE),
+        "w2": jnp.zeros((hidden_dim, 5 + flow_bins), dtype=DEFAULT_DTYPE),
+        "b2": jnp.zeros((5 + flow_bins,), dtype=DEFAULT_DTYPE),
     }
 
 
@@ -289,6 +322,45 @@ def run_direct_mixture_mlp_filter(
     )
     _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def run_scalar_flow_mlp_filter(
+    mlp_params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    flow_bins: int = 8,
+    flow_bound: float = 5.0,
+    min_var: float = 1e-6,
+) -> ScalarFlowMLPOutputs:
+    """Run a strict scalar monotone-spline flow filter over batch-major episodes."""
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array]):
+        prev_mean, prev_var = carry
+        x_t, y_t = obs
+        outputs = scalar_flow_mlp_step(
+            mlp_params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            flow_bins=flow_bins,
+            flow_bound=flow_bound,
+            min_var=min_var,
+        )
+        return (outputs.filter_mean, outputs.filter_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt))
+    return ScalarFlowMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
 def run_component_mixture_mlp_filter(
@@ -559,6 +631,52 @@ def direct_mixture_mlp_step(
     )
 
 
+def scalar_flow_mlp_step(
+    mlp_params: dict[str, jax.Array],
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    x_t: jax.Array,
+    y_t: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    flow_bins: int = 8,
+    flow_bound: float = 5.0,
+    min_var: float = 1e-6,
+) -> ScalarFlowMLPOutputs:
+    """Compute one direct scalar-flow filtering update.
+
+    The filter marginal is `z = loc + scale * S(u)`, where `u` is standard
+    normal and `S` is a monotone piecewise-linear spline with fixed base knots
+    and learned positive output-bin heights. This gives exact density
+    evaluation while preserving the online filtering update contract.
+    """
+
+    hidden = _mlp_hidden(mlp_params, prev_mean, prev_var, x_t, y_t, state_params)
+    raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
+    flow_loc = prev_mean + raw[..., 0]
+    flow_log_scale = jnp.clip(raw[..., 1], -5.0, 5.0)
+    flow_bin_logits = raw[..., 2 : 2 + flow_bins]
+    filter_mean, filter_var = scalar_flow_moments(
+        flow_loc,
+        flow_log_scale,
+        flow_bin_logits,
+        bound=flow_bound,
+        min_var=min_var,
+    )
+    backward_raw = raw[..., 2 + flow_bins :]
+    backward_a = backward_raw[..., 0]
+    return ScalarFlowMLPOutputs(
+        filter_mean=filter_mean,
+        filter_var=filter_var,
+        flow_loc=flow_loc,
+        flow_log_scale=flow_log_scale,
+        flow_bin_logits=flow_bin_logits,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * filter_mean + backward_raw[..., 1],
+        backward_var=jax.nn.softplus(backward_raw[..., 2]) + min_var,
+    )
+
+
 def component_mixture_mlp_step(
     mlp_params: dict[str, jax.Array],
     prev_weights: jax.Array,
@@ -688,6 +806,114 @@ def mixture_edge_mean_cov_from_outputs(
     return edge_mean, jnp.stack((row_0, row_1), axis=-2)
 
 
+def scalar_flow_sample(
+    key: jax.Array,
+    loc: jax.Array,
+    log_scale: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    sample_shape: tuple[int, ...] = (),
+    bound: float = 5.0,
+) -> jax.Array:
+    base_shape = sample_shape + loc.shape
+    u = jax.random.normal(key, shape=base_shape, dtype=loc.dtype)
+    return scalar_flow_forward(u, loc, log_scale, bin_logits, bound=bound)
+
+
+def scalar_flow_log_prob(
+    value: jax.Array,
+    loc: jax.Array,
+    log_scale: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float = 5.0,
+) -> jax.Array:
+    u, log_dz_du = scalar_flow_inverse(value, loc, log_scale, bin_logits, bound=bound)
+    return -0.5 * (LOG_2PI + u**2) - log_dz_du
+
+
+def scalar_flow_forward(
+    u: jax.Array,
+    loc: jax.Array,
+    log_scale: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float = 5.0,
+) -> jax.Array:
+    target_shape = jnp.broadcast_shapes(u.shape, loc.shape, log_scale.shape, bin_logits.shape[:-1])
+    u = jnp.broadcast_to(u, target_shape)
+    spline, _ = _piecewise_linear_spline_forward(u, bin_logits, bound=bound)
+    return loc + jnp.exp(log_scale) * spline
+
+
+def scalar_flow_inverse(
+    value: jax.Array,
+    loc: jax.Array,
+    log_scale: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float = 5.0,
+) -> tuple[jax.Array, jax.Array]:
+    target_shape = jnp.broadcast_shapes(
+        value.shape, loc.shape, log_scale.shape, bin_logits.shape[:-1]
+    )
+    value = jnp.broadcast_to(value, target_shape)
+    spline_value = (value - loc) * jnp.exp(-log_scale)
+    u, log_ds_du = _piecewise_linear_spline_inverse(spline_value, bin_logits, bound=bound)
+    return u, log_scale + log_ds_du
+
+
+def scalar_flow_moments(
+    loc: jax.Array,
+    log_scale: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float = 5.0,
+    min_var: float = 1e-6,
+) -> tuple[jax.Array, jax.Array]:
+    nodes = jnp.asarray(
+        [
+            -3.4361591188377374,
+            -2.5327316742327897,
+            -1.7566836492998819,
+            -1.0366108297895136,
+            -0.3429013272237046,
+            0.3429013272237046,
+            1.0366108297895136,
+            1.7566836492998819,
+            2.5327316742327897,
+            3.4361591188377374,
+        ],
+        dtype=loc.dtype,
+    )
+    weights = jnp.asarray(
+        [
+            0.00000764043285523262,
+            0.0013436457467812327,
+            0.033874394455481064,
+            0.2401386110823147,
+            0.6108626337353258,
+            0.6108626337353258,
+            0.2401386110823147,
+            0.033874394455481064,
+            0.0013436457467812327,
+            0.00000764043285523262,
+        ],
+        dtype=loc.dtype,
+    ) / jnp.sqrt(jnp.pi)
+    z = scalar_flow_forward(
+        jnp.sqrt(2.0) * nodes.reshape((10,) + (1,) * loc.ndim),
+        loc,
+        log_scale,
+        bin_logits,
+        bound=bound,
+    )
+    weights = weights.reshape((10,) + (1,) * loc.ndim)
+    mean = jnp.sum(weights * z, axis=0)
+    second = jnp.sum(weights * z**2, axis=0)
+    return mean, jnp.maximum(second - mean**2, min_var)
+
+
 def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
     if component_mean_init_span == 0.0:
         return jnp.zeros((num_components,), dtype=DEFAULT_DTYPE)
@@ -729,6 +955,89 @@ def _mlp_features(
         ),
         axis=-1,
     )
+
+
+LOG_2PI = jnp.log(2.0 * jnp.pi)
+
+
+def _piecewise_linear_spline_forward(
+    u: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float,
+) -> tuple[jax.Array, jax.Array]:
+    bin_logits = _broadcast_flow_bin_logits(bin_logits, u)
+    num_bins = bin_logits.shape[-1]
+    dtype = u.dtype
+    x_edges = jnp.linspace(-bound, bound, num_bins + 1, dtype=dtype)
+    bin_width = jnp.asarray(2.0 * bound / num_bins, dtype=dtype)
+    heights = jax.nn.softmax(bin_logits, axis=-1) * (2.0 * bound)
+    y_edges = jnp.concatenate(
+        (
+            jnp.full(bin_logits.shape[:-1] + (1,), -bound, dtype=dtype),
+            -bound + jnp.cumsum(heights, axis=-1),
+        ),
+        axis=-1,
+    )
+    slopes = heights / bin_width
+
+    bin_index = jnp.clip(jnp.floor((u - x_edges[0]) / bin_width).astype(jnp.int32), 0, num_bins - 1)
+    x_left = x_edges[bin_index]
+    y_left = jnp.take_along_axis(y_edges, bin_index[..., None], axis=-1)[..., 0]
+    slope = jnp.take_along_axis(slopes, bin_index[..., None], axis=-1)[..., 0]
+    inside = (u >= -bound) & (u <= bound)
+    y_inside = y_left + slope * (u - x_left)
+    left_slope = slopes[..., 0]
+    right_slope = slopes[..., -1]
+    y_left_tail = -bound + left_slope * (u + bound)
+    y_right_tail = bound + right_slope * (u - bound)
+    y = jnp.where(inside, y_inside, jnp.where(u < -bound, y_left_tail, y_right_tail))
+    log_slope = jnp.log(jnp.where(inside, slope, jnp.where(u < -bound, left_slope, right_slope)))
+    return y, log_slope
+
+
+def _piecewise_linear_spline_inverse(
+    y: jax.Array,
+    bin_logits: jax.Array,
+    *,
+    bound: float,
+) -> tuple[jax.Array, jax.Array]:
+    bin_logits = _broadcast_flow_bin_logits(bin_logits, y)
+    num_bins = bin_logits.shape[-1]
+    dtype = y.dtype
+    x_edges = jnp.linspace(-bound, bound, num_bins + 1, dtype=dtype)
+    bin_width = jnp.asarray(2.0 * bound / num_bins, dtype=dtype)
+    heights = jax.nn.softmax(bin_logits, axis=-1) * (2.0 * bound)
+    y_edges = jnp.concatenate(
+        (
+            jnp.full(bin_logits.shape[:-1] + (1,), -bound, dtype=dtype),
+            -bound + jnp.cumsum(heights, axis=-1),
+        ),
+        axis=-1,
+    )
+    slopes = heights / bin_width
+    bin_index = jnp.sum(y[..., None] >= y_edges[..., 1:], axis=-1)
+    bin_index = jnp.clip(bin_index.astype(jnp.int32), 0, num_bins - 1)
+    x_left = x_edges[bin_index]
+    y_left = jnp.take_along_axis(y_edges, bin_index[..., None], axis=-1)[..., 0]
+    slope = jnp.take_along_axis(slopes, bin_index[..., None], axis=-1)[..., 0]
+    inside = (y >= -bound) & (y <= bound)
+    u_inside = x_left + (y - y_left) / slope
+    left_slope = slopes[..., 0]
+    right_slope = slopes[..., -1]
+    u_left_tail = -bound + (y + bound) / left_slope
+    u_right_tail = bound + (y - bound) / right_slope
+    u = jnp.where(inside, u_inside, jnp.where(y < -bound, u_left_tail, u_right_tail))
+    log_slope = jnp.log(jnp.where(inside, slope, jnp.where(y < -bound, left_slope, right_slope)))
+    return u, log_slope
+
+
+def _broadcast_flow_bin_logits(bin_logits: jax.Array, value: jax.Array) -> jax.Array:
+    sample_ndim = value.ndim - (bin_logits.ndim - 1)
+    if sample_ndim < 0:
+        raise ValueError("value shape is not compatible with flow bin logits")
+    reshaped = jnp.reshape(bin_logits, (1,) * sample_ndim + bin_logits.shape)
+    return jnp.broadcast_to(reshaped, value.shape + (bin_logits.shape[-1],))
 
 
 def _outputs_from_raw(

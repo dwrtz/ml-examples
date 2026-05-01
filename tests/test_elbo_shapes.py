@@ -23,11 +23,16 @@ from vbf.models.cells import (
     edge_mean_cov_from_outputs,
     init_direct_mixture_mlp_params,
     init_direct_mlp_params,
+    init_scalar_flow_mlp_params,
     init_split_head_mlp_params,
     init_structured_mlp_params,
     run_direct_mixture_mlp_filter,
     run_direct_mlp_filter,
     run_direct_mlp_teacher_forced,
+    run_scalar_flow_mlp_filter,
+    scalar_flow_forward,
+    scalar_flow_inverse,
+    scalar_flow_log_prob,
     run_split_head_mlp_filter,
     run_split_head_mlp_teacher_forced,
     run_structured_mlp_filter,
@@ -396,6 +401,54 @@ def test_direct_mixture_mlp_filter_shapes_and_moments() -> None:
         np.ones((3, 5)),
         atol=1e-6,
     )
+
+
+def test_scalar_flow_filter_shapes_and_density() -> None:
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=10.0)
+    batch = make_linear_gaussian_batch(
+        LinearGaussianDataConfig(batch_size=3, time_steps=5),
+        state_params,
+        seed=24,
+    )
+    mlp_params = init_scalar_flow_mlp_params(
+        jax.random.PRNGKey(25),
+        hidden_dim=8,
+        flow_bins=6,
+    )
+
+    outputs = run_scalar_flow_mlp_filter(
+        mlp_params,
+        batch,
+        state_params,
+        flow_bins=6,
+    )
+    u = jax.numpy.linspace(-2.0, 2.0, 5)
+    z = scalar_flow_forward(
+        u[:, None, None],
+        outputs.flow_loc[None, :, :],
+        outputs.flow_log_scale[None, :, :],
+        outputs.flow_bin_logits[None, :, :, :],
+    )
+    recovered, log_det = scalar_flow_inverse(
+        z,
+        outputs.flow_loc[None, :, :],
+        outputs.flow_log_scale[None, :, :],
+        outputs.flow_bin_logits[None, :, :, :],
+    )
+    log_prob = scalar_flow_log_prob(
+        z,
+        outputs.flow_loc[None, :, :],
+        outputs.flow_log_scale[None, :, :],
+        outputs.flow_bin_logits[None, :, :, :],
+    )
+
+    assert outputs.filter_mean.shape == (3, 5)
+    assert outputs.filter_var.shape == (3, 5)
+    assert outputs.flow_bin_logits.shape == (3, 5, 6)
+    expected_u = jax.numpy.broadcast_to(u[:, None, None], recovered.shape)
+    np.testing.assert_allclose(np.asarray(recovered), np.asarray(expected_u), atol=1e-5)
+    assert jax.numpy.all(jax.numpy.isfinite(log_det))
+    assert jax.numpy.all(jax.numpy.isfinite(log_prob))
 
 
 def test_direct_mixture_mlp_component_mean_spread_initialization() -> None:

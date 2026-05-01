@@ -18,6 +18,7 @@ from vbf.data import EpisodeBatch, LinearGaussianParams
 from vbf.metrics import gaussian_interval_coverage, rmse_global, scalar_gaussian_nll
 from vbf.models.cells import (
     GaussianMixtureMLPOutputs,
+    ScalarFlowMLPOutputs,
     component_mixture_mlp_step,
     direct_mlp_step,
     direct_mixture_mlp_step,
@@ -25,12 +26,17 @@ from vbf.models.cells import (
     init_component_mixture_mlp_params,
     init_direct_mixture_mlp_params,
     init_direct_mlp_params,
+    init_scalar_flow_mlp_params,
     init_structured_mixture_mlp_params,
     init_structured_mlp_params,
     run_component_mixture_mlp_filter,
     run_direct_mlp_filter,
     run_direct_mixture_mlp_filter,
     run_direct_mlp_teacher_forced,
+    run_scalar_flow_mlp_filter,
+    scalar_flow_log_prob,
+    scalar_flow_sample,
+    scalar_flow_mlp_step,
 )
 from vbf.nonlinear import (
     GridReferenceConfig,
@@ -92,6 +98,8 @@ def main() -> None:
     mixture_component_mean_init_span = float(
         training_config.get("mixture_component_mean_init_span", 0.0)
     )
+    flow_bins = int(training_config.get("flow_bins", 8))
+    flow_bound = float(training_config.get("flow_bound", 5.0))
     default_elbo_weight = 0.0 if objective_family == "local_projection" else 1.0
     elbo_weight = float(training_config.get("elbo_weight", default_elbo_weight))
     joint_elbo_weight = float(training_config.get("joint_elbo_weight", 0.0))
@@ -236,12 +244,18 @@ def main() -> None:
         raise ValueError("renyi_alpha must be in (0, 1]")
     if entropy_bonus_weight < 0.0:
         raise ValueError("entropy_bonus_weight must be nonnegative")
-    if posterior_family not in {"gaussian", "gaussian_mixture"}:
-        raise ValueError("posterior_family must be one of: gaussian, gaussian_mixture")
-    if posterior_family == "gaussian" and mixture_components != 1:
-        raise ValueError("mixture_components must be 1 for posterior_family='gaussian'")
+    if posterior_family not in {"gaussian", "gaussian_mixture", "scalar_flow"}:
+        raise ValueError(
+            "posterior_family must be one of: gaussian, gaussian_mixture, scalar_flow"
+        )
+    if posterior_family in {"gaussian", "scalar_flow"} and mixture_components != 1:
+        raise ValueError("mixture_components must be 1 for non-mixture posterior families")
     if posterior_family == "gaussian_mixture" and mixture_components <= 1:
         raise ValueError("gaussian_mixture requires mixture_components > 1")
+    if posterior_family == "scalar_flow" and flow_bins <= 0:
+        raise ValueError("flow_bins must be positive")
+    if posterior_family == "scalar_flow" and flow_bound <= 0.0:
+        raise ValueError("flow_bound must be positive")
     if mixture_cell not in {"direct", "component"}:
         raise ValueError("mixture_cell must be one of: direct, component")
     if posterior_family != "gaussian_mixture" and mixture_cell != "direct":
@@ -322,6 +336,7 @@ def main() -> None:
         mixture_cell=mixture_cell,
         mixture_components=mixture_components,
         mixture_component_mean_init_span=mixture_component_mean_init_span,
+        flow_bins=flow_bins,
     )
     params = (
         {
@@ -376,6 +391,8 @@ def main() -> None:
                 mixture_cell=mixture_cell,
                 mixture_components=mixture_components,
                 mixture_component_mean_init_span=mixture_component_mean_init_span,
+                flow_bins=flow_bins,
+                flow_bound=flow_bound,
             )
         )
         loss = jnp.asarray(0.0, dtype=batch_x.dtype)
@@ -617,6 +634,8 @@ def main() -> None:
         mixture_cell=mixture_cell,
         mixture_components=mixture_components,
         mixture_component_mean_init_span=mixture_component_mean_init_span,
+        flow_bins=flow_bins,
+        flow_bound=flow_bound,
     )
     eval_cached = load_or_compute_nonlinear_reference(
         eval_data_config,
@@ -729,6 +748,8 @@ def main() -> None:
         "mixture_cell": mixture_cell,
         "mixture_components": mixture_components,
         "mixture_component_mean_init_span": mixture_component_mean_init_span,
+        "flow_bins": flow_bins,
+        "flow_bound": flow_bound,
         "elbo_weight": elbo_weight,
         "joint_elbo_weight": joint_elbo_weight,
         "joint_elbo_horizon": joint_elbo_horizon,
@@ -768,7 +789,13 @@ def main() -> None:
         "local_projection_divergence": local_projection_divergence,
         "local_projection_alpha": local_projection_alpha,
         "local_projection_stop_target": local_projection_stop_target,
-        "state_nll_estimator": "mixture_density" if _is_mixture_outputs(outputs) else "gaussian",
+        "state_nll_estimator": (
+            "mixture_density"
+            if _is_mixture_outputs(outputs)
+            else "scalar_flow_density"
+            if _is_flow_outputs(outputs)
+            else "gaussian"
+        ),
         "coverage_estimator": "moment_gaussian",
         "reference_mean_weight": reference_mean_weight,
         "reference_rollout_weight": reference_rollout_weight,
@@ -881,6 +908,17 @@ def main() -> None:
                 "learned_backward_var": np.asarray(outputs.backward_var),
             }
         )
+    if _is_flow_outputs(outputs):
+        diagnostics.update(
+            {
+                "learned_flow_loc": np.asarray(outputs.flow_loc),
+                "learned_flow_log_scale": np.asarray(outputs.flow_log_scale),
+                "learned_flow_bin_logits": np.asarray(outputs.flow_bin_logits),
+                "learned_backward_a": np.asarray(outputs.backward_a),
+                "learned_backward_b": np.asarray(outputs.backward_b),
+                "learned_backward_var": np.asarray(outputs.backward_var),
+            }
+        )
     np.savez(output_dir / "diagnostics.npz", **diagnostics)
     summary_path = output_dir / "evaluation_summary.md"
     summary_path.write_text(_render_summary(config["name"], metrics, history), encoding="utf-8")
@@ -901,7 +939,16 @@ def _init_model_params(
     mixture_cell: str = "direct",
     mixture_components: int = 1,
     mixture_component_mean_init_span: float = 0.0,
+    flow_bins: int = 8,
 ) -> dict[str, jax.Array]:
+    if posterior_family == "scalar_flow":
+        if model == "structured_elbo_sine_mlp":
+            raise ValueError("scalar_flow is only supported for direct nonlinear MLP models")
+        return init_scalar_flow_mlp_params(
+            key,
+            hidden_dim=hidden_dim,
+            flow_bins=flow_bins,
+        )
     if posterior_family == "gaussian_mixture":
         init_fn = (
             init_structured_mixture_mlp_params
@@ -966,7 +1013,19 @@ def _run_model_filter(
     mixture_cell: str = "direct",
     mixture_components: int = 1,
     mixture_component_mean_init_span: float = 0.0,
+    flow_bins: int = 8,
+    flow_bound: float = 5.0,
 ):
+    if posterior_family == "scalar_flow":
+        return _run_scalar_flow_mlp_filter(
+            params,
+            batch,
+            state_params,
+            flow_bins=flow_bins,
+            flow_bound=flow_bound,
+            min_var=min_var,
+            y_observed=y_observed,
+        )
     if posterior_family == "gaussian_mixture":
         if model == "structured_elbo_sine_mlp":
             return run_nonlinear_structured_mixture_mlp_filter(
@@ -1173,6 +1232,88 @@ def _run_component_mixture_mlp_filter(
     return GaussianMixtureMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
 
 
+def _run_scalar_flow_mlp_filter(
+    params: dict[str, jax.Array],
+    batch: EpisodeBatch,
+    state_params: LinearGaussianParams,
+    *,
+    flow_bins: int,
+    flow_bound: float,
+    min_var: float,
+    y_observed: jax.Array | None,
+):
+    if y_observed is None:
+        return run_scalar_flow_mlp_filter(
+            params,
+            batch,
+            state_params,
+            flow_bins=flow_bins,
+            flow_bound=flow_bound,
+            min_var=min_var,
+        )
+
+    x_bt = batch.x.T
+    y_bt = batch.y.T
+    observed_bt = y_observed.T
+
+    def step(carry: tuple[jax.Array, jax.Array], obs: tuple[jax.Array, jax.Array, jax.Array]):
+        prev_mean, prev_var = carry
+        x_t, y_t, observed_t = obs
+        update_outputs = scalar_flow_mlp_step(
+            params,
+            prev_mean,
+            prev_var,
+            x_t,
+            y_t,
+            state_params,
+            flow_bins=flow_bins,
+            flow_bound=flow_bound,
+            min_var=min_var,
+        )
+        transition_outputs = _scalar_flow_transition_prediction_outputs(
+            prev_mean,
+            prev_var,
+            state_params,
+            flow_bins=flow_bins,
+            min_var=min_var,
+        )
+        outputs = _where_outputs(observed_t, update_outputs, transition_outputs)
+        return (outputs.filter_mean, outputs.filter_var), outputs
+
+    batch_size = batch.x.shape[0]
+    init = (
+        jnp.full((batch_size,), state_params.m0, dtype=DEFAULT_DTYPE),
+        jnp.full((batch_size,), state_params.p0, dtype=DEFAULT_DTYPE),
+    )
+    _, outputs = jax.lax.scan(step, init, (x_bt, y_bt, observed_bt))
+    return ScalarFlowMLPOutputs(*(_time_major_to_batch_major(item) for item in outputs))
+
+
+def _scalar_flow_transition_prediction_outputs(
+    prev_mean: jax.Array,
+    prev_var: jax.Array,
+    state_params: LinearGaussianParams,
+    *,
+    flow_bins: int,
+    min_var: float,
+) -> ScalarFlowMLPOutputs:
+    pred_var = prev_var + state_params.q
+    flow_loc = prev_mean
+    flow_log_scale = 0.5 * jnp.log(jnp.maximum(pred_var, min_var))
+    flow_bin_logits = jnp.zeros(prev_mean.shape + (flow_bins,), dtype=prev_mean.dtype)
+    backward_a = pred_var / jnp.maximum(pred_var, min_var)
+    return ScalarFlowMLPOutputs(
+        filter_mean=flow_loc,
+        filter_var=jnp.maximum(pred_var, min_var),
+        flow_loc=flow_loc,
+        flow_log_scale=flow_log_scale,
+        flow_bin_logits=flow_bin_logits,
+        backward_a=backward_a,
+        backward_b=prev_mean - backward_a * flow_loc,
+        backward_var=jnp.full_like(prev_var, min_var),
+    )
+
+
 def _component_offsets(num_components: int, component_mean_init_span: float) -> jax.Array:
     if component_mean_init_span == 0.0:
         return jnp.zeros((num_components,), dtype=DEFAULT_DTYPE)
@@ -1375,6 +1516,15 @@ def _nonlinear_edge_log_weights(
             observation=observation,
             num_samples=num_samples,
         )
+    if _is_flow_outputs(outputs):
+        return _nonlinear_flow_edge_log_weights(
+            outputs,
+            batch,
+            state_params,
+            key,
+            observation=observation,
+            num_samples=num_samples,
+        )
 
     eps_t_key, eps_tm1_key = jax.random.split(key)
     sample_shape = (num_samples,) + outputs.filter_mean.shape
@@ -1424,6 +1574,133 @@ def _nonlinear_windowed_joint_elbo(
         objective_family="elbo",
         renyi_alpha=1.0,
     )
+
+
+def _nonlinear_flow_edge_log_weights(
+    outputs: ScalarFlowMLPOutputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    num_samples: int,
+) -> jax.Array:
+    z_t_key, eps_tm1_key = jax.random.split(key)
+    z_t = scalar_flow_sample(
+        z_t_key,
+        outputs.flow_loc,
+        outputs.flow_log_scale,
+        outputs.flow_bin_logits,
+        sample_shape=(num_samples,),
+    )
+    backward_mean = outputs.backward_a[None, ...] * z_t + outputs.backward_b[None, ...]
+    eps_tm1 = jax.random.normal(eps_tm1_key, shape=z_t.shape, dtype=outputs.filter_mean.dtype)
+    z_tm1 = backward_mean + jnp.sqrt(outputs.backward_var)[None, ...] * eps_tm1
+    prev_mean, prev_var = _previous_filter_beliefs(
+        outputs.filter_mean, outputs.filter_var, state_params
+    )
+    return (
+        nonlinear_observation_log_prob(
+            batch.y[None, ...],
+            z_t,
+            batch.x[None, ...],
+            state_params,
+            observation,
+        )
+        + _normal_log_prob(z_t, z_tm1, state_params.q)
+        + _normal_log_prob(z_tm1, prev_mean[None, ...], prev_var[None, ...])
+        - scalar_flow_log_prob(
+            z_t,
+            outputs.flow_loc[None, ...],
+            outputs.flow_log_scale[None, ...],
+            outputs.flow_bin_logits[None, ...],
+        )
+        - _normal_log_prob(z_tm1, backward_mean, outputs.backward_var[None, ...])
+    )
+
+
+def _nonlinear_flow_windowed_joint_log_weights(
+    outputs: ScalarFlowMLPOutputs,
+    batch,
+    state_params: LinearGaussianParams,
+    key: jax.Array,
+    *,
+    observation: str,
+    horizon: int,
+    num_samples: int,
+    num_windows: int,
+) -> jax.Array:
+    time_steps = batch.x.shape[1]
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    if horizon > time_steps:
+        raise ValueError("horizon cannot exceed batch time_steps")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+    if num_windows <= 0:
+        raise ValueError("num_windows must be positive")
+
+    possible_windows = time_steps - horizon + 1
+    end_indices = (
+        jnp.arange(horizon - 1, time_steps)
+        if num_windows >= possible_windows
+        else jax.random.randint(
+            key,
+            shape=(num_windows,),
+            minval=horizon - 1,
+            maxval=time_steps,
+        )
+    )
+    sample_key, *backward_keys = jax.random.split(key, horizon + 1)
+    end_loc = jnp.take(outputs.flow_loc, end_indices, axis=1)
+    end_log_scale = jnp.take(outputs.flow_log_scale, end_indices, axis=1)
+    end_bin_logits = jnp.take(outputs.flow_bin_logits, end_indices, axis=1)
+    z_t = scalar_flow_sample(
+        sample_key,
+        end_loc,
+        end_log_scale,
+        end_bin_logits,
+        sample_shape=(num_samples,),
+    )
+    log_q = scalar_flow_log_prob(z_t, end_loc[None, ...], end_log_scale[None, ...], end_bin_logits[None, ...])
+    log_score = jnp.zeros_like(log_q)
+
+    for offset in range(horizon):
+        t_indices = end_indices - offset
+        x_t = jnp.take(batch.x, t_indices, axis=1)
+        y_t = jnp.take(batch.y, t_indices, axis=1)
+        log_score = log_score + nonlinear_observation_log_prob(
+            y_t[None, ...],
+            z_t,
+            x_t[None, ...],
+            state_params,
+            observation,
+        )
+
+        backward_a = jnp.take(outputs.backward_a, t_indices, axis=1)
+        backward_b = jnp.take(outputs.backward_b, t_indices, axis=1)
+        backward_var = jnp.take(outputs.backward_var, t_indices, axis=1)
+        backward_mean = backward_a[None, ...] * z_t + backward_b[None, ...]
+        eps_prev = jax.random.normal(
+            backward_keys[offset],
+            shape=z_t.shape,
+            dtype=outputs.filter_mean.dtype,
+        )
+        z_prev = backward_mean + jnp.sqrt(backward_var)[None, ...] * eps_prev
+        log_score = log_score + _normal_log_prob(z_t, z_prev, state_params.q)
+        log_q = log_q + _normal_log_prob(z_prev, backward_mean, backward_var[None, ...])
+        z_t = z_prev
+
+    first_transition_indices = end_indices - horizon + 1
+    prev_mean, prev_var = _previous_filter_beliefs(
+        outputs.filter_mean,
+        outputs.filter_var,
+        state_params,
+    )
+    initial_mean = jnp.take(prev_mean, first_transition_indices, axis=1)
+    initial_var = jnp.take(prev_var, first_transition_indices, axis=1)
+    log_score = log_score + _normal_log_prob(z_t, initial_mean[None, ...], initial_var[None, ...])
+    return log_score - log_q
 
 
 def _nonlinear_windowed_joint_objective(
@@ -1483,6 +1760,17 @@ def _nonlinear_windowed_joint_log_weights(
         )
     if _is_mixture_outputs(outputs):
         return _nonlinear_mixture_windowed_joint_log_weights(
+            outputs,
+            batch,
+            state_params,
+            key,
+            observation=observation,
+            horizon=horizon,
+            num_samples=num_samples,
+            num_windows=num_windows,
+        )
+    if _is_flow_outputs(outputs):
+        return _nonlinear_flow_windowed_joint_log_weights(
             outputs,
             batch,
             state_params,
@@ -1699,7 +1987,17 @@ def _nonlinear_fivo_diagnostics(
             outputs.component_var.transpose(1, 0, 2),
         )
         if _is_mixture_outputs(outputs)
-        else (outputs.filter_mean.T, outputs.filter_var.T)
+        else (
+            (
+                outputs.flow_loc.T,
+                outputs.flow_log_scale.T,
+                outputs.flow_bin_logits.transpose(1, 0, 2),
+                outputs.filter_mean.T,
+                outputs.filter_var.T,
+            )
+            if _is_flow_outputs(outputs)
+            else (outputs.filter_mean.T, outputs.filter_var.T)
+        )
     )
     future_x, future_y, future_mask = _future_observation_windows(
         batch.x,
@@ -1779,6 +2077,52 @@ def _nonlinear_fivo_diagnostics(
                     weights_t[:, None, :],
                     mean_t[:, None, :],
                     var_t[:, None, :],
+                )
+        elif _is_flow_outputs(outputs):
+            (
+                x_t,
+                y_t,
+                loc_t,
+                log_scale_t,
+                bin_logits_t,
+                mean_t,
+                var_t,
+                future_x_t,
+                future_y_t,
+                future_mask_t,
+                step_key,
+            ) = obs
+            sample_key, resample_key = jax.random.split(step_key)
+            eps = jax.random.normal(
+                sample_key,
+                shape=(batch_size, num_particles),
+                dtype=batch.x.dtype,
+            )
+            if proposal_family == "transition_filter_bridge":
+                bridge_var = 1.0 / (1.0 / state_params.q + 1.0 / var_t[:, None])
+                bridge_mean = bridge_var * (
+                    prev_z / state_params.q + mean_t[:, None] / var_t[:, None]
+                )
+                z_t = bridge_mean + jnp.sqrt(bridge_var) * eps
+                log_q = _normal_log_prob(z_t, bridge_mean, bridge_var)
+            elif proposal_family == "learned_transition_filter_bridge":
+                raise ValueError(
+                    "learned_transition_filter_bridge requires gaussian_mixture outputs"
+                )
+            else:
+                z_t = scalar_flow_sample(
+                    sample_key,
+                    loc_t,
+                    log_scale_t,
+                    bin_logits_t,
+                    sample_shape=(num_particles,),
+                )
+                z_t = jnp.swapaxes(z_t, 0, 1)
+                log_q = scalar_flow_log_prob(
+                    z_t,
+                    loc_t[:, None],
+                    log_scale_t[:, None],
+                    bin_logits_t[:, None, :],
                 )
         else:
             x_t, y_t, mean_t, var_t, future_x_t, future_y_t, future_mask_t, step_key = obs
@@ -2109,6 +2453,13 @@ def _state_nll(outputs, z: jax.Array) -> jax.Array:
             outputs.component_mean,
             outputs.component_var,
         )
+    if _is_flow_outputs(outputs):
+        return -scalar_flow_log_prob(
+            z,
+            outputs.flow_loc,
+            outputs.flow_log_scale,
+            outputs.flow_bin_logits,
+        )
     return scalar_gaussian_nll(z, outputs.filter_mean, outputs.filter_var)
 
 
@@ -2258,6 +2609,10 @@ def _take_component(values: jax.Array, component: jax.Array) -> jax.Array:
 
 def _is_mixture_outputs(outputs) -> bool:
     return isinstance(outputs, GaussianMixtureMLPOutputs)
+
+
+def _is_flow_outputs(outputs) -> bool:
+    return isinstance(outputs, ScalarFlowMLPOutputs)
 
 
 def _previous_filter_beliefs(

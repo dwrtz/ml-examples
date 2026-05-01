@@ -8,9 +8,11 @@ from vbf.data import LinearGaussianParams
 from vbf.dtypes import DEFAULT_DTYPE
 from vbf.models.cells import (
     init_direct_mixture_mlp_params,
+    init_scalar_flow_mlp_params,
     init_structured_mixture_mlp_params,
     init_structured_mlp_params,
     run_direct_mixture_mlp_filter,
+    run_scalar_flow_mlp_filter,
 )
 from vbf.nonlinear import (
     NonlinearDataConfig,
@@ -380,6 +382,60 @@ def test_fixed_lag_twist_uses_only_future_observations() -> None:
     assert jnp.array_equal(future_x[0, 0], jnp.asarray([1.0, 2.0, 3.0]))
     assert jnp.array_equal(future_y[0, 0], jnp.asarray([101.0, 102.0, 103.0]))
     assert jnp.array_equal(future_mask[0, -2], jnp.asarray([True, False, False]))
+
+
+def test_scalar_flow_objectives_are_finite() -> None:
+    train_nonlinear = _load_train_module()
+    config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, state_params, seed=257)
+    mlp_params = init_scalar_flow_mlp_params(
+        jax.random.PRNGKey(258),
+        hidden_dim=8,
+        flow_bins=6,
+    )
+    outputs = run_scalar_flow_mlp_filter(
+        mlp_params,
+        batch,
+        state_params,
+        flow_bins=6,
+    )
+
+    edge = train_nonlinear._nonlinear_edge_elbo(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(259),
+        observation="x_sine",
+        num_samples=4,
+    )
+    joint = train_nonlinear._nonlinear_windowed_joint_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(260),
+        observation="x_sine",
+        horizon=3,
+        num_samples=4,
+        num_windows=2,
+        objective_family="iwae",
+        renyi_alpha=1.0,
+    )
+    fivo = train_nonlinear._nonlinear_fivo_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(261),
+        observation="x_sine",
+        num_particles=4,
+    )
+
+    assert edge.shape == (2, 6)
+    assert joint.shape == (2, 2)
+    assert fivo.shape == (2,)
+    assert jnp.all(jnp.isfinite(edge))
+    assert jnp.all(jnp.isfinite(joint))
+    assert jnp.all(jnp.isfinite(fivo))
 
 
 def test_local_projection_loss_is_finite_for_gaussian_and_mixture() -> None:
