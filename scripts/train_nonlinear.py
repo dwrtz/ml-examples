@@ -746,6 +746,12 @@ def main() -> None:
         "eval_fivo_mean_ess": None
         if fivo_diagnostics is None
         else float(fivo_diagnostics.mean_ess),
+        "eval_fivo_min_ess": None
+        if fivo_diagnostics is None
+        else float(fivo_diagnostics.min_ess),
+        "eval_fivo_mean_log_weight_variance": None
+        if fivo_diagnostics is None
+        else float(fivo_diagnostics.mean_log_weight_variance),
         "predictive_y_weight": predictive_y_weight,
         "predictive_y_start_fraction": predictive_y_start_fraction,
         "predictive_y_ramp_fraction": predictive_y_ramp_fraction,
@@ -1594,6 +1600,8 @@ def _nonlinear_fivo_objective(
 class FivoDiagnostics(NamedTuple):
     objective: jax.Array
     mean_ess: jax.Array
+    min_ess: jax.Array
+    mean_log_weight_variance: jax.Array
 
 
 def _auxiliary_bridge_params(
@@ -1825,6 +1833,7 @@ def _nonlinear_fivo_diagnostics(
         resample_keys = jax.random.split(resample_key, batch_size)
         weights = jnp.exp(normalized_log_weights)
         ess = 1.0 / jnp.sum(weights**2, axis=1)
+        log_weight_variance = jnp.var(log_weights, axis=1)
         if resampling == "none":
             next_z = z_t
         else:
@@ -1838,9 +1847,9 @@ def _nonlinear_fivo_diagnostics(
             next_z = jnp.take_along_axis(z_t, indices, axis=1)
             if resampling == "stopgrad_resampling":
                 next_z = jax.lax.stop_gradient(next_z)
-        return next_z, (increment, ess)
+        return next_z, (increment, ess, log_weight_variance)
 
-    _, (increments, ess) = jax.lax.scan(
+    _, (increments, ess, log_weight_variance) = jax.lax.scan(
         step,
         prev_particles,
         (
@@ -1852,7 +1861,12 @@ def _nonlinear_fivo_diagnostics(
         ),
     )
     objective = jnp.sum(jnp.swapaxes(increments, 0, 1), axis=1)
-    return FivoDiagnostics(objective=objective, mean_ess=jnp.mean(ess))
+    return FivoDiagnostics(
+        objective=objective,
+        mean_ess=jnp.mean(ess),
+        min_ess=jnp.min(ess),
+        mean_log_weight_variance=jnp.mean(log_weight_variance),
+    )
 
 
 def _future_observation_windows(

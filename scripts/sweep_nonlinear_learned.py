@@ -1465,6 +1465,10 @@ def _load_row(
         "fivo_twist_num_points": metrics.get("fivo_twist_num_points", 16),
         "eval_fivo_objective": metrics.get("eval_fivo_objective"),
         "eval_fivo_mean_ess": metrics.get("eval_fivo_mean_ess"),
+        "eval_fivo_min_ess": metrics.get("eval_fivo_min_ess"),
+        "eval_fivo_mean_log_weight_variance": metrics.get(
+            "eval_fivo_mean_log_weight_variance"
+        ),
         "predictive_y_num_samples": metrics["predictive_y_num_samples"],
         "predictive_y_estimator": metrics["predictive_y_estimator"],
         "preupdate_predictive_weight": metrics.get("preupdate_predictive_weight", 0.0),
@@ -1557,6 +1561,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "fivo_twist_num_points",
         "eval_fivo_objective",
         "eval_fivo_mean_ess",
+        "eval_fivo_min_ess",
+        "eval_fivo_mean_log_weight_variance",
         "predictive_y_num_samples",
         "predictive_y_estimator",
         "preupdate_predictive_weight",
