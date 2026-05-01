@@ -66,6 +66,7 @@ class ModelSpec:
     preupdate_predictive_num_points: int = 32
     preupdate_predictive_start_fraction: float = 0.0
     preupdate_predictive_ramp_fraction: float = 0.0
+    preupdate_predictive_stop_filter_gradient: bool = False
     local_projection_weight: float = 0.0
     local_projection_num_points: int = 32
     local_projection_likelihood_power: float = 1.0
@@ -667,6 +668,27 @@ def _selected_model_specs(
             preupdate_predictive_weight=0.1,
             preupdate_predictive_start_fraction=0.5,
             preupdate_predictive_ramp_fraction=0.25,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
+        "direct_mixture_k2_detached_predictive_consistent_iwae_h4_k32": ModelSpec(
+            key="direct_mixture_k2_detached_predictive_consistent_iwae_h4_k32",
+            label=(
+                "direct nonlinear K2 mixture IWAE h4 k32 + detached pre-update "
+                "predictive scoring"
+            ),
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            preupdate_predictive_weight=0.1,
+            preupdate_predictive_start_fraction=0.5,
+            preupdate_predictive_ramp_fraction=0.25,
+            preupdate_predictive_stop_filter_gradient=True,
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
@@ -1350,6 +1372,9 @@ def _make_train_config(
         "preupdate_predictive_num_points": spec.preupdate_predictive_num_points,
         "preupdate_predictive_start_fraction": spec.preupdate_predictive_start_fraction,
         "preupdate_predictive_ramp_fraction": spec.preupdate_predictive_ramp_fraction,
+        "preupdate_predictive_stop_filter_gradient": (
+            spec.preupdate_predictive_stop_filter_gradient
+        ),
         "local_projection_weight": spec.local_projection_weight,
         "local_projection_num_points": spec.local_projection_num_points,
         "local_projection_likelihood_power": spec.local_projection_likelihood_power,
@@ -1450,6 +1475,9 @@ def _load_row(
         "preupdate_predictive_ramp_fraction": metrics.get(
             "preupdate_predictive_ramp_fraction", 0.0
         ),
+        "preupdate_predictive_stop_filter_gradient": metrics.get(
+            "preupdate_predictive_stop_filter_gradient", False
+        ),
         "local_projection_weight": metrics.get("local_projection_weight", 0.0),
         "local_projection_num_points": metrics.get("local_projection_num_points", 32),
         "local_projection_likelihood_power": metrics.get("local_projection_likelihood_power", 1.0),
@@ -1535,6 +1563,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "preupdate_predictive_num_points",
         "preupdate_predictive_start_fraction",
         "preupdate_predictive_ramp_fraction",
+        "preupdate_predictive_stop_filter_gradient",
         "local_projection_weight",
         "local_projection_num_points",
         "local_projection_likelihood_power",

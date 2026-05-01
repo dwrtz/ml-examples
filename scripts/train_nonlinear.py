@@ -121,6 +121,9 @@ def main() -> None:
     preupdate_predictive_ramp_fraction = float(
         training_config.get("preupdate_predictive_ramp_fraction", 0.0)
     )
+    preupdate_predictive_stop_filter_gradient = bool(
+        training_config.get("preupdate_predictive_stop_filter_gradient", False)
+    )
     default_local_projection_weight = 1.0 if objective_family == "local_projection" else 0.0
     local_projection_weight = float(
         training_config.get("local_projection_weight", default_local_projection_weight)
@@ -482,6 +485,7 @@ def main() -> None:
                 observation=data_config.observation,
                 num_points=preupdate_predictive_num_points,
                 min_var=min_var,
+                stop_filter_gradient=preupdate_predictive_stop_filter_gradient,
             )
             loss = loss + effective_preupdate_predictive_weight * jnp.mean(
                 preupdate_predictive_loss
@@ -751,6 +755,7 @@ def main() -> None:
         "preupdate_predictive_num_points": preupdate_predictive_num_points,
         "preupdate_predictive_start_fraction": preupdate_predictive_start_fraction,
         "preupdate_predictive_ramp_fraction": preupdate_predictive_ramp_fraction,
+        "preupdate_predictive_stop_filter_gradient": preupdate_predictive_stop_filter_gradient,
         "local_projection_weight": local_projection_weight,
         "local_projection_num_points": local_projection_num_points,
         "local_projection_likelihood_power": local_projection_likelihood_power,

@@ -700,6 +700,7 @@ def nonlinear_preupdate_predictive_normalizer_loss(
     observation: str = "x_sine",
     num_points: int = 32,
     min_var: float = 1e-6,
+    stop_filter_gradient: bool = False,
 ) -> jax.Array:
     """Return `-log p_q(y_t | D_<t, x_t)` for the carried transition prediction.
 
@@ -710,6 +711,8 @@ def nonlinear_preupdate_predictive_normalizer_loss(
 
     if num_points <= 0:
         raise ValueError("num_points must be positive")
+    if stop_filter_gradient:
+        outputs = jax.tree_util.tree_map(jax.lax.stop_gradient, outputs)
     if isinstance(outputs, GaussianMixtureMLPOutputs):
         log_prob = _mixture_preupdate_log_prob_y(
             outputs,

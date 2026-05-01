@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -61,7 +63,9 @@ def load_or_compute_nonlinear_reference(
     )
     if use_cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = cache_path.with_suffix(".tmp.npz")
+        tmp_path = cache_path.with_name(
+            f"{cache_path.stem}.{os.getpid()}.{uuid.uuid4().hex}.tmp.npz"
+        )
         np.savez(
             tmp_path,
             x=np.asarray(batch.x),
@@ -72,7 +76,10 @@ def load_or_compute_nonlinear_reference(
             reference_predictive_mean=np.asarray(reference.predictive_mean),
             reference_predictive_var=np.asarray(reference.predictive_var),
         )
-        tmp_path.replace(cache_path)
+        if not cache_path.exists():
+            tmp_path.replace(cache_path)
+        else:
+            tmp_path.unlink(missing_ok=True)
     return CachedNonlinearReference(
         batch=batch,
         reference=reference,
