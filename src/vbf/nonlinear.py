@@ -150,7 +150,7 @@ def make_nonlinear_batch(
         x_missing_period=config.x_missing_period,
     )
     key = jax.random.PRNGKey(seed)
-    key_z0, key_w, key_v = jax.random.split(key, 3)
+    key_z0, key_w, key_v, key_t = jax.random.split(key, 4)
     x = make_observation_covariates(data_config, jax.random.fold_in(key, 42))
     z_initial = params.m0 + jnp.sqrt(params.p0) * jax.random.normal(
         key_z0,
@@ -164,11 +164,28 @@ def make_nonlinear_batch(
     )
     z = z_initial[:, None] + jnp.cumsum(innovations, axis=1)
     y_mean = nonlinear_observation_mean(z, x, config.observation)
-    y = y_mean + jnp.sqrt(params.r) * jax.random.normal(
-        key_v,
-        shape=(config.batch_size, config.time_steps),
-        dtype=jnp.float64,
-    )
+    if observation_noise_family(config.observation) == "student_t":
+        df = observation_student_t_df(config.observation)
+        normal = jax.random.normal(
+            key_v,
+            shape=(config.batch_size, config.time_steps),
+            dtype=jnp.float64,
+        )
+        chi2 = 2.0 * jax.random.gamma(
+            key_t,
+            0.5 * df,
+            shape=(config.batch_size, config.time_steps),
+            dtype=jnp.float64,
+        )
+        y = y_mean + jnp.sqrt(params.r) * normal / jnp.sqrt(chi2 / df)
+    else:
+        y = y_mean + jnp.sqrt(
+            nonlinear_observation_var(z, x, params, config.observation)
+        ) * jax.random.normal(
+            key_v,
+            shape=(config.batch_size, config.time_steps),
+            dtype=jnp.float64,
+        )
     return EpisodeBatch(x=x, y=y, z=z)
 
 
@@ -218,11 +235,23 @@ def nonlinear_grid_filter(
             data_config.observation,
         )
         predictive_mean = jnp.sum(pred_mass * obs_mean, axis=1)
+        obs_var = nonlinear_observation_var(
+            grid[None, :],
+            x_t[:, None],
+            params,
+            data_config.observation,
+        )
         predictive_var = jnp.sum(
-            pred_mass * ((obs_mean - predictive_mean[:, None]) ** 2 + params.r),
+            pred_mass * ((obs_mean - predictive_mean[:, None]) ** 2 + obs_var),
             axis=1,
         )
-        filter_log_mass = pred_log_mass + _normal_log_prob(y_t[:, None], obs_mean, params.r)
+        filter_log_mass = pred_log_mass + nonlinear_observation_log_prob(
+            y_t[:, None],
+            grid[None, :],
+            x_t[:, None],
+            params,
+            data_config.observation,
+        )
         filter_log_mass = filter_log_mass - jsp.special.logsumexp(
             filter_log_mass,
             axis=1,
@@ -281,12 +310,13 @@ def nonlinear_grid_filter_shape_diagnostics(
             prev_log_mass[:, :, None] + transition_log_mass[None, :, :],
             axis=1,
         )
-        obs_mean = nonlinear_observation_mean(
+        filter_log_mass = pred_log_mass + nonlinear_observation_log_prob(
+            y_t[:, None],
             grid[None, :],
             x_t[:, None],
+            params,
             data_config.observation,
         )
-        filter_log_mass = pred_log_mass + _normal_log_prob(y_t[:, None], obs_mean, params.r)
         filter_log_mass = filter_log_mass - jsp.special.logsumexp(
             filter_log_mass,
             axis=1,
@@ -358,12 +388,13 @@ def nonlinear_grid_filter_masses(
             prev_log_mass[:, :, None] + transition_log_mass[None, :, :],
             axis=1,
         )
-        obs_mean = nonlinear_observation_mean(
+        filter_log_mass = pred_log_mass + nonlinear_observation_log_prob(
+            y_t[:, None],
             grid[None, :],
             x_t[:, None],
+            params,
             data_config.observation,
         )
-        filter_log_mass = pred_log_mass + _normal_log_prob(y_t[:, None], obs_mean, params.r)
         filter_log_mass = filter_log_mass - jsp.special.logsumexp(
             filter_log_mass,
             axis=1,
@@ -390,8 +421,6 @@ def nonlinear_bootstrap_particle_filter(
 ) -> NonlinearParticleFilterOutputs:
     """Run a bootstrap particle filter for nonlinear reference diagnostics."""
 
-    if data_config.observation != "x_sine":
-        raise ValueError(f"Unsupported particle filter observation: {data_config.observation}")
     if num_particles <= 0:
         raise ValueError("num_particles must be positive")
     if kde_bandwidth_scale <= 0.0:
@@ -427,8 +456,23 @@ def nonlinear_bootstrap_particle_filter(
             data_config.observation,
         )
         predictive_mean = jnp.mean(obs_mean, axis=1)
-        predictive_var = jnp.mean((obs_mean - predictive_mean[:, None]) ** 2 + params.r, axis=1)
-        log_likelihood = _normal_log_prob(y_t[:, None], obs_mean, params.r)
+        obs_var = nonlinear_observation_var(
+            pred_particles,
+            x_t[:, None],
+            params,
+            data_config.observation,
+        )
+        predictive_var = jnp.mean(
+            (obs_mean - predictive_mean[:, None]) ** 2 + obs_var,
+            axis=1,
+        )
+        log_likelihood = nonlinear_observation_log_prob(
+            y_t[:, None],
+            pred_particles,
+            x_t[:, None],
+            params,
+            data_config.observation,
+        )
         predictive_log_prob_y = jsp.special.logsumexp(log_likelihood, axis=1) - jnp.log(
             num_particles
         )
@@ -482,11 +526,105 @@ def nonlinear_observation_mean(
 ) -> jax.Array:
     """Return `h(z_t, x_t)` for supported nonlinear observation models."""
 
-    if observation == "x_sine":
+    if observation in {"x_sine", "student_t"}:
         return x * jnp.sin(z)
     if observation == "sine_product":
         return jnp.sin(x * z)
+    if observation == "x_tanh":
+        return x * jnp.tanh(z)
+    if observation == "x_cubic":
+        return x * (z**3) / 25.0
+    if observation == "x_quadratic_signed":
+        return x * jnp.sign(z) * (z**2) / 8.0
+    if observation == "heteroskedastic_gaussian":
+        return x * jnp.tanh(z)
     raise ValueError(f"Unsupported nonlinear observation: {observation}")
+
+
+def observation_noise_family(observation: str) -> str:
+    """Return the scalar observation-noise family for a benchmark name."""
+
+    if observation == "student_t":
+        return "student_t"
+    if observation in {
+        "x_sine",
+        "sine_product",
+        "x_tanh",
+        "x_cubic",
+        "x_quadratic_signed",
+        "heteroskedastic_gaussian",
+    }:
+        return "gaussian"
+    raise ValueError(f"Unsupported nonlinear observation: {observation}")
+
+
+def observation_student_t_df(observation: str) -> float:
+    """Return degrees of freedom for heavy-tailed observation benchmarks."""
+
+    if observation == "student_t":
+        return 3.0
+    raise ValueError(f"Observation does not use Student-t noise: {observation}")
+
+
+def nonlinear_observation_var(
+    z: jax.Array,
+    x: jax.Array,
+    params: LinearGaussianParams,
+    observation: str = "x_sine",
+) -> jax.Array:
+    """Return conditional observation variance for supported benchmarks."""
+
+    base = jnp.asarray(params.r, dtype=z.dtype) + jnp.zeros_like(z + x)
+    if observation == "heteroskedastic_gaussian":
+        return base * (0.5 + jax.nn.softplus(0.5 * z))
+    if observation == "student_t":
+        df = observation_student_t_df(observation)
+        return base * df / (df - 2.0)
+    observation_noise_family(observation)
+    return base
+
+
+def nonlinear_observation_jacobian(
+    z: jax.Array,
+    x: jax.Array,
+    observation: str = "x_sine",
+) -> jax.Array:
+    """Return elementwise derivative of observation mean with respect to `z`."""
+
+    def scalar_jacobian(z_scalar: jax.Array, x_scalar: jax.Array) -> jax.Array:
+        return jax.grad(
+            lambda z_value: nonlinear_observation_mean(z_value, x_scalar, observation)
+        )(z_scalar)
+
+    return jax.vmap(scalar_jacobian)(jnp.ravel(z), jnp.ravel(x)).reshape(z.shape)
+
+
+def nonlinear_observation_log_prob(
+    y: jax.Array,
+    z: jax.Array,
+    x: jax.Array,
+    params: LinearGaussianParams,
+    observation: str = "x_sine",
+) -> jax.Array:
+    """Return `log p(y_t | z_t, x_t)` for supported nonlinear observations."""
+
+    mean = nonlinear_observation_mean(z, x, observation)
+    if observation_noise_family(observation) == "student_t":
+        df = observation_student_t_df(observation)
+        scale = jnp.sqrt(jnp.asarray(params.r, dtype=z.dtype))
+        standardized = (y - mean) / scale
+        return (
+            jsp.special.gammaln(0.5 * (df + 1.0))
+            - jsp.special.gammaln(0.5 * df)
+            - 0.5 * jnp.log(df * jnp.pi)
+            - jnp.log(scale)
+            - 0.5 * (df + 1.0) * jnp.log1p((standardized**2) / df)
+        )
+    return _normal_log_prob(
+        y,
+        mean,
+        nonlinear_observation_var(z, x, params, observation),
+    )
 
 
 def nonlinear_predictive_moments_from_filter(
@@ -503,14 +641,24 @@ def nonlinear_predictive_moments_from_filter(
     `z_t` is Gaussian under the random-walk transition.
     """
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported predictive moments for observation: {observation}")
-
     initial_mean = jnp.full((filter_mean.shape[0], 1), params.m0, dtype=filter_mean.dtype)
     initial_var = jnp.full((filter_var.shape[0], 1), params.p0, dtype=filter_var.dtype)
     prev_mean = jnp.concatenate((initial_mean, filter_mean[:, :-1]), axis=1)
     prev_var = jnp.concatenate((initial_var, filter_var[:, :-1]), axis=1)
     pred_state_var = prev_var + params.q
+    if observation != "x_sine":
+        nodes, log_weights = _hermgauss(32, filter_mean.dtype)
+        z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
+        obs_mean = nonlinear_observation_mean(z, x[..., None], observation)
+        weights = jnp.exp(log_weights - 0.5 * jnp.log(jnp.pi))
+        predictive_mean = jnp.sum(weights * obs_mean, axis=-1)
+        obs_var = nonlinear_observation_var(z, x[..., None], params, observation)
+        predictive_var = jnp.sum(
+            weights * ((obs_mean - predictive_mean[..., None]) ** 2 + obs_var),
+            axis=-1,
+        )
+        return predictive_mean, predictive_var
+
     mean_sin = jnp.exp(-0.5 * pred_state_var) * jnp.sin(prev_mean)
     mean_cos_2z = jnp.exp(-2.0 * pred_state_var) * jnp.cos(2.0 * prev_mean)
     mean_sin_sq = 0.5 * (1.0 - mean_cos_2z)
@@ -530,18 +678,19 @@ def nonlinear_preassimilation_log_prob_y(
 ) -> jax.Array:
     """Return `log p(y_t | q^F_{t-1}, x_t)` using Gauss-Hermite quadrature."""
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported nonlinear predictive likelihood: {observation}")
     if num_points <= 0:
         raise ValueError("num_points must be positive")
 
-    nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
-    nodes = jnp.asarray(nodes_np, dtype=prev_filter_mean.dtype)
-    log_weights = jnp.log(jnp.asarray(weights_np, dtype=prev_filter_mean.dtype))
+    nodes, log_weights = _hermgauss(num_points, prev_filter_mean.dtype)
     pred_state_var = prev_filter_var + params.q
     z = prev_filter_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
-    obs_mean = x[..., None] * jnp.sin(z)
-    log_likelihood = _normal_log_prob(y[..., None], obs_mean, params.r)
+    log_likelihood = nonlinear_observation_log_prob(
+        y[..., None],
+        z,
+        x[..., None],
+        params,
+        observation,
+    )
     return jsp.special.logsumexp(log_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(jnp.pi)
 
 
@@ -561,8 +710,6 @@ def nonlinear_preupdate_predictive_normalizer_loss(
     transition and scored under the nonlinear observation likelihood.
     """
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported nonlinear predictive normalizer: {observation}")
     if num_points <= 0:
         raise ValueError("num_points must be positive")
     if isinstance(outputs, GaussianMixtureMLPOutputs):
@@ -571,6 +718,7 @@ def nonlinear_preupdate_predictive_normalizer_loss(
             batch.x,
             batch.y,
             params,
+            observation=observation,
             num_points=num_points,
             min_var=min_var,
         )
@@ -615,8 +763,6 @@ def nonlinear_tilted_projection_loss(
     The returned array has batch-time shape.
     """
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported nonlinear projection observation: {observation}")
     if num_points <= 0:
         raise ValueError("num_points must be positive")
     if likelihood_power <= 0.0:
@@ -630,6 +776,7 @@ def nonlinear_tilted_projection_loss(
             outputs,
             batch,
             params,
+            observation=observation,
             num_points=num_points,
             likelihood_power=likelihood_power,
             divergence=divergence,
@@ -641,6 +788,7 @@ def nonlinear_tilted_projection_loss(
         outputs,
         batch,
         params,
+        observation=observation,
         num_points=num_points,
         likelihood_power=likelihood_power,
         divergence=divergence,
@@ -789,21 +937,19 @@ def nonlinear_structured_mlp_step(
 ) -> StructuredMLPOutputs:
     """Compute one EKF-residualized nonlinear filter update."""
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported structured nonlinear observation: {observation}")
-
     features = _mlp_features(prev_mean, prev_var, x_t, y_t, state_params)
     hidden = jnp.tanh(features @ mlp_params["w1"] + mlp_params["b1"])
     raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
     pred_var = prev_var + state_params.q
-    obs_mean = x_t * jnp.sin(prev_mean)
-    obs_jacobian = x_t * jnp.cos(prev_mean)
+    obs_mean = nonlinear_observation_mean(prev_mean, x_t, observation)
+    obs_jacobian = nonlinear_observation_jacobian(prev_mean, x_t, observation)
+    obs_var = nonlinear_observation_var(prev_mean, x_t, state_params, observation)
     innovation = y_t - obs_mean
-    innovation_var = obs_jacobian**2 * pred_var + state_params.r
+    innovation_var = obs_jacobian**2 * pred_var + obs_var
     base_gain = pred_var * obs_jacobian / innovation_var
     gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 0])
     filter_mean = prev_mean + gain_scale * base_gain * innovation
-    base_filter_var = pred_var * state_params.r / innovation_var
+    base_filter_var = pred_var * obs_var / innovation_var
     filter_var = base_filter_var * jnp.exp(jnp.clip(raw[..., 1], -5.0, 5.0)) + min_var
     backward_a = raw[..., 2]
     return StructuredMLPOutputs(
@@ -830,9 +976,6 @@ def nonlinear_structured_mixture_mlp_step(
 ) -> GaussianMixtureMLPOutputs:
     """Compute one EKF-residualized Gaussian-mixture nonlinear update."""
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported structured nonlinear observation: {observation}")
-
     prev_mean, prev_var = mixture_mean_and_var(
         prev_weights,
         prev_component_mean,
@@ -843,16 +986,17 @@ def nonlinear_structured_mixture_mlp_step(
     raw = hidden @ mlp_params["w2"] + mlp_params["b2"]
     raw = jnp.reshape(raw, raw.shape[:-1] + (num_components, 6))
     pred_var = prev_var + state_params.q
-    obs_mean = x_t * jnp.sin(prev_mean)
-    obs_jacobian = x_t * jnp.cos(prev_mean)
+    obs_mean = nonlinear_observation_mean(prev_mean, x_t, observation)
+    obs_jacobian = nonlinear_observation_jacobian(prev_mean, x_t, observation)
+    obs_var = nonlinear_observation_var(prev_mean, x_t, state_params, observation)
     innovation = y_t - obs_mean
-    innovation_var = obs_jacobian**2 * pred_var + state_params.r
+    innovation_var = obs_jacobian**2 * pred_var + obs_var
     base_gain = pred_var * obs_jacobian / innovation_var
     gain_scale = 2.0 * jax.nn.sigmoid(raw[..., 1])
     component_mean = prev_mean[..., None] + gain_scale * base_gain[..., None] * innovation[
         ..., None
     ]
-    base_filter_var = pred_var * state_params.r / innovation_var
+    base_filter_var = pred_var * obs_var / innovation_var
     component_var = base_filter_var[..., None] * jnp.exp(jnp.clip(raw[..., 2], -5.0, 5.0))
     component_var = component_var + min_var
     backward_a = raw[..., 3]
@@ -940,6 +1084,7 @@ def _gaussian_tilted_projection_loss(
     batch: EpisodeBatch,
     params: LinearGaussianParams,
     *,
+    observation: str,
     num_points: int,
     likelihood_power: float,
     divergence: str,
@@ -955,10 +1100,12 @@ def _gaussian_tilted_projection_loss(
     nodes, log_weights = _hermgauss(num_points, outputs.filter_mean.dtype)
     pred_var = prev_var + params.q
     z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_var[..., None]) * nodes
-    log_likelihood = _normal_log_prob(
+    log_likelihood = nonlinear_observation_log_prob(
         batch.y[..., None],
-        batch.x[..., None] * jnp.sin(z),
-        params.r,
+        z,
+        batch.x[..., None],
+        params,
+        observation,
     )
     log_base_weights = log_weights - 0.5 * jnp.log(jnp.pi)
     log_target_normalizer = jsp.special.logsumexp(
@@ -1008,6 +1155,7 @@ def _mixture_tilted_projection_loss(
     batch: EpisodeBatch,
     params: LinearGaussianParams,
     *,
+    observation: str,
     num_points: int,
     likelihood_power: float,
     divergence: str,
@@ -1019,10 +1167,12 @@ def _mixture_tilted_projection_loss(
     nodes, log_weights = _hermgauss(num_points, outputs.component_mean.dtype)
     pred_var = prev_var + params.q
     z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_var[..., None]) * nodes
-    log_likelihood = _normal_log_prob(
+    log_likelihood = nonlinear_observation_log_prob(
         batch.y[..., None, None],
-        batch.x[..., None, None] * jnp.sin(z),
-        params.r,
+        z,
+        batch.x[..., None, None],
+        params,
+        observation,
     )
     log_prev_weights = jnp.log(jnp.clip(prev_weights, min_var))
     log_pred_density = jsp.special.logsumexp(
@@ -1088,6 +1238,7 @@ def _mixture_preupdate_log_prob_y(
     y: jax.Array,
     params: LinearGaussianParams,
     *,
+    observation: str,
     num_points: int,
     min_var: float,
 ) -> jax.Array:
@@ -1095,8 +1246,13 @@ def _mixture_preupdate_log_prob_y(
     nodes, log_weights = _hermgauss(num_points, outputs.component_mean.dtype)
     pred_state_var = jnp.maximum(prev_var + params.q, min_var)
     z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
-    obs_mean = x[..., None, None] * jnp.sin(z)
-    log_likelihood = _normal_log_prob(y[..., None, None], obs_mean, params.r)
+    log_likelihood = nonlinear_observation_log_prob(
+        y[..., None, None],
+        z,
+        x[..., None, None],
+        params,
+        observation,
+    )
     component_log_prob = (
         jnp.log(jnp.clip(prev_weights, min_var))
         + jsp.special.logsumexp(log_weights + log_likelihood, axis=-1)

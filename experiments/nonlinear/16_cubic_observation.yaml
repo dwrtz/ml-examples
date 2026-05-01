@@ -1,8 +1,8 @@
-name: nonlinear_student_t_observation
+name: nonlinear_cubic_observation
 benchmark: nonlinear
-observation: student_t
+observation: x_cubic
 seed: 321
-output_dir: outputs/nonlinear_student_t_observation_reference
+output_dir: outputs/nonlinear_cubic_observation_reference
 
 data:
   batch_size: 128
@@ -12,7 +12,7 @@ data:
   x_amplitude: 1.0
   x_constant: 1.0
   x_missing_period: 4
-  observation: student_t
+  observation: x_cubic
 
 state_space:
   q: 0.1

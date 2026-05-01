@@ -33,7 +33,7 @@ from vbf.nonlinear import (
     NonlinearDataConfig,
     make_y_observed_mask,
     make_nonlinear_batch,
-    nonlinear_observation_mean,
+    nonlinear_observation_log_prob,
     nonlinear_preassimilation_log_prob_y,
     nonlinear_preupdate_predictive_normalizer_loss,
     nonlinear_predictive_moments_from_filter,
@@ -1271,9 +1271,14 @@ def _nonlinear_edge_log_weights(
     prev_mean, prev_var = _previous_filter_beliefs(
         outputs.filter_mean, outputs.filter_var, state_params
     )
-    observation_mean = nonlinear_observation_mean(z_t, batch.x[None, ...], observation)
     return (
-        _normal_log_prob(batch.y[None, ...], observation_mean, state_params.r)
+        nonlinear_observation_log_prob(
+            batch.y[None, ...],
+            z_t,
+            batch.x[None, ...],
+            state_params,
+            observation,
+        )
         + _normal_log_prob(z_t, z_tm1, state_params.q)
         + _normal_log_prob(z_tm1, prev_mean[None, ...], prev_var[None, ...])
         - _normal_log_prob(z_t, outputs.filter_mean[None, ...], outputs.filter_var[None, ...])
@@ -1410,8 +1415,13 @@ def _nonlinear_windowed_joint_log_weights(
         t_indices = end_indices - offset
         x_t = jnp.take(batch.x, t_indices, axis=1)
         y_t = jnp.take(batch.y, t_indices, axis=1)
-        obs_mean = nonlinear_observation_mean(z_t, x_t[None, ...], observation)
-        log_score = log_score + _normal_log_prob(y_t[None, ...], obs_mean, state_params.r)
+        log_score = log_score + nonlinear_observation_log_prob(
+            y_t[None, ...],
+            z_t,
+            x_t[None, ...],
+            state_params,
+            observation,
+        )
 
         backward_a = jnp.take(outputs.backward_a, t_indices, axis=1)
         backward_b = jnp.take(outputs.backward_b, t_indices, axis=1)
@@ -1535,8 +1545,6 @@ def _nonlinear_fivo_diagnostics(
 ) -> FivoDiagnostics:
     """Sequential particle-filter marginal likelihood objective and ESS."""
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported FIVO observation: {observation}")
     if num_particles <= 0:
         raise ValueError("num_particles must be positive")
     if proposal_family not in {
@@ -1678,9 +1686,14 @@ def _nonlinear_fivo_diagnostics(
                 z_t = mean_t[:, None] + jnp.sqrt(var_t[:, None]) * eps
                 log_q = _normal_log_prob(z_t, mean_t[:, None], var_t[:, None])
 
-        obs_mean = nonlinear_observation_mean(z_t, x_t[:, None], observation)
         log_weights = (
-            _normal_log_prob(y_t[:, None], obs_mean, state_params.r)
+            nonlinear_observation_log_prob(
+                y_t[:, None],
+                z_t,
+                x_t[:, None],
+                state_params,
+                observation,
+            )
             + _normal_log_prob(z_t, prev_z, state_params.q)
             - log_q
         )
@@ -1772,16 +1785,19 @@ def _fixed_lag_twist_log_potential(
     signal from future observations.
     """
 
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported twist observation: {observation}")
     nodes_np, weights_np = np.polynomial.hermite.hermgauss(num_points)
     nodes = jnp.asarray(nodes_np, dtype=z_t.dtype)
     log_quadrature_weights = jnp.log(jnp.asarray(weights_np, dtype=z_t.dtype))
     lags = jnp.arange(1, future_x.shape[1] + 1, dtype=z_t.dtype)
     future_var = jnp.maximum(lags * state_params.q, 1e-12)
     z_future = z_t[:, :, None, None] + jnp.sqrt(2.0 * future_var[None, None, :, None]) * nodes
-    obs_mean = future_x[:, None, :, None] * jnp.sin(z_future)
-    log_likelihood = _normal_log_prob(future_y[:, None, :, None], obs_mean, state_params.r)
+    log_likelihood = nonlinear_observation_log_prob(
+        future_y[:, None, :, None],
+        z_future,
+        future_x[:, None, :, None],
+        state_params,
+        observation,
+    )
     log_pred = jax.nn.logsumexp(log_quadrature_weights + log_likelihood, axis=-1) - 0.5 * jnp.log(
         jnp.pi
     )
@@ -1837,9 +1853,14 @@ def _nonlinear_mixture_edge_log_weights(
         outputs,
         state_params,
     )
-    observation_mean = nonlinear_observation_mean(z_t, batch.x[None, ...], observation)
     return (
-        _normal_log_prob(batch.y[None, ...], observation_mean, state_params.r)
+        nonlinear_observation_log_prob(
+            batch.y[None, ...],
+            z_t,
+            batch.x[None, ...],
+            state_params,
+            observation,
+        )
         + _normal_log_prob(z_t, z_tm1, state_params.q)
         + _mixture_log_prob(z_tm1, prev_weights, prev_mean, prev_var)
         - _mixture_log_prob(
@@ -1911,8 +1932,13 @@ def _nonlinear_mixture_windowed_joint_log_weights(
         t_indices = end_indices - offset
         x_t = jnp.take(batch.x, t_indices, axis=1)
         y_t = jnp.take(batch.y, t_indices, axis=1)
-        obs_mean = nonlinear_observation_mean(z_t, x_t[None, ...], observation)
-        log_score = log_score + _normal_log_prob(y_t[None, ...], obs_mean, state_params.r)
+        log_score = log_score + nonlinear_observation_log_prob(
+            y_t[None, ...],
+            z_t,
+            x_t[None, ...],
+            state_params,
+            observation,
+        )
 
         weights_t = jnp.take(outputs.filter_weights, t_indices, axis=1)
         mean_t = jnp.take(outputs.component_mean, t_indices, axis=1)
@@ -1972,8 +1998,6 @@ def _nonlinear_mixture_preassimilation_log_prob_y(
     observation: str,
     num_points: int,
 ) -> jax.Array:
-    if observation != "x_sine":
-        raise ValueError(f"Unsupported nonlinear predictive likelihood: {observation}")
     if num_points <= 0:
         raise ValueError("num_points must be positive")
     prev_weights, prev_mean, prev_var = _previous_mixture_filter_beliefs(outputs, params)
@@ -1982,8 +2006,13 @@ def _nonlinear_mixture_preassimilation_log_prob_y(
     log_quadrature_weights = jnp.log(jnp.asarray(weights_np, dtype=prev_mean.dtype))
     pred_state_var = prev_var + params.q
     z = prev_mean[..., None] + jnp.sqrt(2.0 * pred_state_var[..., None]) * nodes
-    obs_mean = x[..., None, None] * jnp.sin(z)
-    log_likelihood = _normal_log_prob(y[..., None, None], obs_mean, params.r)
+    log_likelihood = nonlinear_observation_log_prob(
+        y[..., None, None],
+        z,
+        x[..., None, None],
+        params,
+        observation,
+    )
     component_log_prob = (
         jnp.log(prev_weights)
         + jax.nn.logsumexp(log_quadrature_weights + log_likelihood, axis=-1)

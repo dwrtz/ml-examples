@@ -12,6 +12,8 @@ from vbf.nonlinear import (
     nonlinear_grid_filter_masses,
     nonlinear_grid_filter_shape_diagnostics,
     nonlinear_bootstrap_particle_filter,
+    nonlinear_observation_jacobian,
+    nonlinear_observation_log_prob,
     nonlinear_observation_mean,
     nonlinear_preassimilation_log_prob_y,
     nonlinear_predictive_moments_from_filter,
@@ -42,6 +44,57 @@ def test_x_sine_observation_keeps_weak_observability_role_for_x() -> None:
     assert mean[0] == 0.0
     assert mean[2] == 0.0
     assert mean[1] != 0.0
+
+
+def test_model_agnostic_observation_families_are_finite() -> None:
+    params = LinearGaussianParams(q=0.1, r=0.2, m0=1.0, p0=2.0)
+    z = jnp.asarray([-1.0, 0.0, 1.0])
+    x = jnp.asarray([0.5, 1.0, -1.5])
+    y = jnp.asarray([0.1, -0.2, 0.3])
+
+    for observation in (
+        "student_t",
+        "x_tanh",
+        "x_cubic",
+        "x_quadratic_signed",
+        "heteroskedastic_gaussian",
+    ):
+        mean = nonlinear_observation_mean(z, x, observation=observation)
+        jacobian = nonlinear_observation_jacobian(z, x, observation=observation)
+        log_prob = nonlinear_observation_log_prob(y, z, x, params, observation)
+
+        assert mean.shape == z.shape
+        assert jacobian.shape == z.shape
+        assert log_prob.shape == z.shape
+        assert jnp.all(jnp.isfinite(mean))
+        assert jnp.all(jnp.isfinite(jacobian))
+        assert jnp.all(jnp.isfinite(log_prob))
+
+
+def test_non_sine_grid_filter_and_predictive_likelihood_are_finite() -> None:
+    config = NonlinearDataConfig(batch_size=2, time_steps=5, observation="x_tanh")
+    params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, params, seed=145)
+
+    reference = nonlinear_grid_filter(
+        batch,
+        params,
+        data_config=config,
+        grid_config=GridReferenceConfig(grid_min=-8.0, grid_max=8.0, num_grid=101),
+    )
+    log_prob = nonlinear_preassimilation_log_prob_y(
+        reference.filter_mean,
+        reference.filter_var,
+        batch.x,
+        batch.y,
+        params,
+        observation="x_tanh",
+        num_points=8,
+    )
+
+    assert jnp.all(jnp.isfinite(reference.filter_mean))
+    assert jnp.all(reference.filter_var > 0.0)
+    assert jnp.all(jnp.isfinite(log_prob))
 
 
 def test_nonlinear_grid_filter_shapes_and_positive_variance() -> None:

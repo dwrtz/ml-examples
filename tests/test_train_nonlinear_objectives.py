@@ -180,6 +180,48 @@ def test_windowed_joint_mixture_objective_is_finite() -> None:
     assert jnp.all(jnp.isfinite(predictive_y))
 
 
+def test_non_sine_mixture_objectives_are_finite() -> None:
+    train_nonlinear = _load_train_module()
+    config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_tanh")
+    state_params = LinearGaussianParams(q=0.1, r=0.1, m0=1.0, p0=2.0)
+    batch = make_nonlinear_batch(config, state_params, seed=236)
+    mlp_params = init_direct_mixture_mlp_params(
+        jax.random.PRNGKey(237),
+        hidden_dim=8,
+        num_components=2,
+    )
+    outputs = run_direct_mixture_mlp_filter(
+        mlp_params,
+        batch,
+        state_params,
+        num_components=2,
+    )
+
+    objective = train_nonlinear._nonlinear_windowed_joint_objective(
+        outputs,
+        batch,
+        state_params,
+        jax.random.PRNGKey(238),
+        observation="x_tanh",
+        horizon=4,
+        num_samples=4,
+        num_windows=3,
+        objective_family="iwae",
+        renyi_alpha=1.0,
+    )
+    predictive_y = train_nonlinear._nonlinear_mixture_preassimilation_log_prob_y(
+        outputs,
+        batch.x,
+        batch.y,
+        state_params,
+        observation="x_tanh",
+        num_points=8,
+    )
+
+    assert jnp.all(jnp.isfinite(objective))
+    assert jnp.all(jnp.isfinite(predictive_y))
+
+
 def test_windowed_joint_structured_mixture_objective_is_finite() -> None:
     train_nonlinear = _load_train_module()
     config = NonlinearDataConfig(batch_size=2, time_steps=6, observation="x_sine")

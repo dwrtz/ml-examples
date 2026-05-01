@@ -29,10 +29,14 @@ METRICS = (
 
 DEFAULT_CONFIGS = (
     "experiments/nonlinear/01_sine_observation.yaml",
+    "experiments/nonlinear/02_student_t_observation.yaml",
     "experiments/nonlinear/03_weak_sine_observation.yaml",
     "experiments/nonlinear/04_intermittent_sine_observation.yaml",
     "experiments/nonlinear/05_zero_sine_observation.yaml",
     "experiments/nonlinear/06_random_normal_sine_observation.yaml",
+    "experiments/nonlinear/15_tanh_observation.yaml",
+    "experiments/nonlinear/16_cubic_observation.yaml",
+    "experiments/nonlinear/17_heteroskedastic_observation.yaml",
 )
 
 
@@ -582,6 +586,37 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k3_joint_iwae_h4_k32": ModelSpec(
+            key="direct_mixture_k3_joint_iwae_h4_k32",
+            label="direct nonlinear K3 exchangeable mixture windowed IWAE h4 k32",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            posterior_family="gaussian_mixture",
+            mixture_components=3,
+        ),
+        "direct_mixture_k2_predictive_consistent_iwae_h4_k32": ModelSpec(
+            key="direct_mixture_k2_predictive_consistent_iwae_h4_k32",
+            label="direct nonlinear K2 mixture IWAE h4 k32 + pre-update predictive scoring",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            joint_elbo_weight=1.0,
+            joint_elbo_horizon=4,
+            joint_elbo_num_samples=32,
+            objective_family="iwae",
+            num_importance_samples=32,
+            preupdate_predictive_weight=0.1,
+            preupdate_predictive_start_fraction=0.5,
+            preupdate_predictive_ramp_fraction=0.25,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
         "direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w005": ModelSpec(
             key="direct_mixture_k2_joint_iwae_h4_k32_predictive_y_w005",
             label="direct nonlinear K2 mixture IWAE h4 k32 + predictive-y w0.05",
@@ -997,6 +1032,20 @@ def _selected_model_specs(
             posterior_family="gaussian_mixture",
             mixture_components=2,
         ),
+        "direct_mixture_k2_power_ep_alpha_0p5": ModelSpec(
+            key="direct_mixture_k2_power_ep_alpha_0p5",
+            label="direct nonlinear K2 mixture generic Power-EP alpha 0.5",
+            objective="direct_elbo_sine_mlp",
+            reference_variance_ratio_weight=0.0,
+            elbo_weight=0.0,
+            local_projection_weight=1.0,
+            local_projection_num_points=32,
+            local_projection_likelihood_power=0.3,
+            local_projection_divergence="alpha",
+            local_projection_alpha=0.5,
+            posterior_family="gaussian_mixture",
+            mixture_components=2,
+        ),
         "direct_mixture_k2_local_alpha_0p7": ModelSpec(
             key="direct_mixture_k2_local_alpha_0p7",
             label="direct nonlinear K2 mixture local alpha 0.7",
@@ -1309,6 +1358,7 @@ def _load_row(
         "model": spec.label,
         "seed": metrics["seed"],
         "objective": metrics["objective"],
+        "observation": metrics["observation"],
         "x_pattern": metrics["x_pattern"],
         "time_steps": config["data"]["time_steps"],
         "steps": metrics["training_steps"],
@@ -1396,6 +1446,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "model",
         "seed",
         "objective",
+        "observation",
         "x_pattern",
         "time_steps",
         "steps",
@@ -1467,12 +1518,13 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
         "success for robustness, not a solved nonlinear strict filter; divergence/family "
         "rows should be compared against it.",
         "",
-        "| x pattern | Model | signal | Steps | state NLL | ref state NLL | cov 90 | ref cov 90 | var ratio | pred-y NLL | pred NLL | ref pred NLL |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| observation | x pattern | Model | signal | Steps | state NLL | ref state NLL | cov 90 | ref cov 90 | var ratio | pred-y NLL | pred NLL | ref pred NLL |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| {x_pattern} | {model} | {training_signal} | {steps} | {state_nll:.6f} | "
+            "| {observation} | {x_pattern} | {model} | {training_signal} | {steps} | "
+            "{state_nll:.6f} | "
             "{reference_state_nll:.6f} | {coverage_90:.6f} | "
             "{reference_coverage_90:.6f} | {variance_ratio:.6f} | "
             "{predictive_y_nll:.6f} | {predictive_nll:.6f} | "
@@ -1485,13 +1537,13 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
                 "",
                 "## Aggregate By Seed",
                 "",
-                "| x pattern | Model | Steps | seeds | state NLL | coverage 90 | variance ratio |",
-                "|---|---|---:|---:|---:|---:|---:|",
+                "| observation | x pattern | Model | Steps | seeds | state NLL | coverage 90 | variance ratio |",
+                "|---|---|---|---:|---:|---:|---:|---:|",
             ]
         )
         for row in aggregate_rows:
             lines.append(
-                "| {x_pattern} | {model} | {steps} | {num_seeds} | "
+                "| {observation} | {x_pattern} | {model} | {steps} | {num_seeds} | "
                 "{state_nll_mean:.6f} +/- {state_nll_std:.6f} | "
                 "{coverage_90_mean:.6f} +/- {coverage_90_std:.6f} | "
                 "{variance_ratio_mean:.6f} +/- {variance_ratio_std:.6f} |".format(**row)
@@ -1509,13 +1561,14 @@ def _render_report(rows: list[dict[str, Any]]) -> str:
 
 
 def _aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
     for row in rows:
-        key = (row["x_pattern"], row["model"], int(row["steps"]))
+        key = (row["observation"], row["x_pattern"], row["model"], int(row["steps"]))
         groups.setdefault(key, []).append(row)
     aggregate = []
-    for (x_pattern, model, steps), group in groups.items():
+    for (observation, x_pattern, model, steps), group in groups.items():
         item: dict[str, Any] = {
+            "observation": observation,
             "x_pattern": x_pattern,
             "model": model,
             "steps": steps,
@@ -1528,7 +1581,10 @@ def _aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item[f"{metric}_mean"] = mean
             item[f"{metric}_std"] = variance**0.5
         aggregate.append(item)
-    return sorted(aggregate, key=lambda row: (row["x_pattern"], row["model"], row["steps"]))
+    return sorted(
+        aggregate,
+        key=lambda row: (row["observation"], row["x_pattern"], row["model"], row["steps"]),
+    )
 
 
 if __name__ == "__main__":
