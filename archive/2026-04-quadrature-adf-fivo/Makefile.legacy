@@ -1,0 +1,13 @@
+UV ?= uv
+ROOT ?= $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+QUADRATURE_CONFIGS ?= archive/2026-04-quadrature-adf-fivo/experiments/nonlinear/10_quadrature_power_ep_distilled_k4.yaml
+QUADRATURE_OUTPUT_DIR ?= outputs/nonlinear_quadrature_pareto
+
+.PHONY: sweep-quadrature-adf-distilled sweep-nonlinear-particle-filter
+
+sweep-quadrature-adf-distilled:
+	cd $(ROOT) && $(UV) run python archive/2026-04-quadrature-adf-fivo/scripts/sweep_quadrature_adf_distilled.py --configs $(QUADRATURE_CONFIGS) --output-dir $(QUADRATURE_OUTPUT_DIR)
+
+sweep-nonlinear-particle-filter:
+	cd $(ROOT) && $(UV) run python archive/2026-04-quadrature-adf-fivo/scripts/sweep_nonlinear_particle_filter.py --configs $(QUADRATURE_CONFIGS) --output-dir $(QUADRATURE_OUTPUT_DIR)

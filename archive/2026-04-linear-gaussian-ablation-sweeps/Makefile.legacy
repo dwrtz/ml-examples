@@ -1,0 +1,17 @@
+UV ?= uv
+ROOT ?= $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+LINEAR_SWEEP_SEEDS ?= 321,322,323,324,325
+WEAK_OBSERVABILITY_DIR ?= outputs/linear_gaussian_weak_observability
+RANDOM_QR_GENERALIZATION_DIR ?= outputs/linear_gaussian_random_qr_generalization
+
+.PHONY: sweep-weak-observability sweep-random-qr-generalization aggregate-linear-gaussian-final-report
+
+sweep-weak-observability:
+	cd $(ROOT) && $(UV) run python archive/2026-04-linear-gaussian-ablation-sweeps/scripts/sweep_weak_observability.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(WEAK_OBSERVABILITY_DIR)
+
+sweep-random-qr-generalization:
+	cd $(ROOT) && $(UV) run python archive/2026-04-linear-gaussian-ablation-sweeps/scripts/sweep_random_qr_generalization.py --seeds $(LINEAR_SWEEP_SEEDS) --output-dir $(RANDOM_QR_GENERALIZATION_DIR)
+
+aggregate-linear-gaussian-final-report:
+	cd $(ROOT) && $(UV) run python archive/2026-04-linear-gaussian-ablation-sweeps/scripts/aggregate_linear_gaussian_final_report.py

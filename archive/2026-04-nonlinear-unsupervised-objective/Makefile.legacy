@@ -1,0 +1,10 @@
+UV ?= uv
+ROOT ?= $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+NONLINEAR_UNSUPERVISED_FINAL_REPORT_DIR ?= outputs/nonlinear_unsupervised_objective_final_report
+NONLINEAR_UNSUPERVISED_FINAL_REPORT_METRICS ?= outputs/nonlinear_unsupervised_predictive_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_masked_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_elbo_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_predictive_masked_y_pilot_1000/metrics.csv,outputs/nonlinear_unsupervised_joint_weight_sweep_1000/metrics.csv,outputs/nonlinear_unsupervised_objective_robustness_full_1000/metrics.csv,outputs/nonlinear_head_seed_sweep_1000/metrics.csv
+
+.PHONY: aggregate-nonlinear-unsupervised-objective-report
+
+aggregate-nonlinear-unsupervised-objective-report:
+	cd $(ROOT) && $(UV) run python archive/2026-04-nonlinear-unsupervised-objective/scripts/aggregate_nonlinear_unsupervised_objective_report.py --metrics $(NONLINEAR_UNSUPERVISED_FINAL_REPORT_METRICS) --output-dir $(NONLINEAR_UNSUPERVISED_FINAL_REPORT_DIR)

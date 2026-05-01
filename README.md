@@ -33,13 +33,13 @@ learning the filtering recursion itself.
 ## Repository Layout
 
 ```text
-archive/      Original 2020-era TensorFlow experiment and scratch files
-docs/         Modernization plans and implementation notes
-experiments/  YAML experiment configurations
-scripts/      Training, evaluation, and plotting entry points
-src/vbf/      Modern variational Bayesian filtering package
-tests/        Unit and smoke tests
-outputs/      Local experiment outputs, ignored by git except .gitkeep
+archive/       Retired research branches and historical experiment material
+docs/results/  Current report snapshots and result index
+experiments/   Active YAML experiment configurations
+scripts/       Active training, evaluation, plotting, and sweep entry points
+src/vbf/       Reusable variational Bayesian filtering package
+tests/         Unit and smoke tests
+outputs/       Local experiment outputs, ignored by git except .gitkeep
 ```
 
 ## Quickstart
@@ -66,21 +66,6 @@ Train the first strict MLP filter:
 make train-linear
 ```
 
-Train the ELBO baseline:
-
-```bash
-make train-linear-elbo
-```
-
-Run the current seed sweeps:
-
-```bash
-make sweep-objective-budget
-make sweep-self-fed-supervised
-make sweep-self-fed-variance
-make sweep-predictive-head
-```
-
 Generate evaluation plots:
 
 ```bash
@@ -98,20 +83,17 @@ The scalar linear-Gaussian benchmark is implemented with:
 - edge-local ELBO training;
 - closed-form scalar Gaussian ELBO training;
 - closed-form scalar Gaussian ELBO diagnostics;
-- posterior predictive evaluation with analytic-residual and direct learned
-  one-step predictive heads;
-- direct, less-structured MLP filter ablations;
 - calibration metrics, coverage, variance ratios, saved configs, and saved
   trained parameters.
 
 The current strongest learned linear-Gaussian baseline is the self-fed supervised
 edge objective. The ELBO objective remains the main unsupervised benchmark. The
-implementation plan and progress notes in `docs/vbf-modernization/` track the
-research interpretation and next experiments.
+modernization plans and retired sweep reports are preserved under `archive/` for
+reproducibility.
 
 A compact scalar benchmark snapshot is committed at
-`docs/results/linear_gaussian_scalar_report.md`; generated full reports remain
-under ignored `outputs/` directories.
+`docs/results/current/linear_gaussian_scalar_report.md`; generated full reports
+remain under ignored `outputs/` directories.
 
 ## Historical Experiment
 

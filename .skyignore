@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build/
 outputs/
+archive/
 code.md
 notes.md
 review.md
